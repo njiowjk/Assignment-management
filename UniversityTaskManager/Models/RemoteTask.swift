@@ -9,6 +9,19 @@ struct RemoteTask: Hashable, Sendable {
     let detail: String?
     let deadline: Date
     let sourceURL: URL?
-    let isCompleted: Bool
+    /// nilは提出状況を取得できないことを表す。ICSの有無から完了を推測しない。
+    let isCompleted: Bool?
+
+    init(externalID: String, source: TaskSource, courseName: String, title: String,
+         detail: String? = nil, deadline: Date, sourceURL: URL? = nil, isCompleted: Bool? = nil) {
+        self.externalID = externalID
+        self.source = source
+        self.courseName = courseName
+        self.title = title
+        self.detail = detail
+        self.deadline = deadline
+        self.sourceURL = sourceURL
+        self.isCompleted = isCompleted
+    }
 }
 

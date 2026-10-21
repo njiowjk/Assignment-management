@@ -65,6 +65,12 @@ struct SampleTaskRepository: TaskRepository {
         ]
     }
 
+    func lastSyncedAt(for source: TaskSource) -> Date? { now }
+
+    func merge(_ tasks: [RemoteTask], source: TaskSource, at date: Date) throws -> SyncSummary {
+        throw AppFailure.storage
+    }
+
     private func makeTask(
         id: String,
         source: TaskSource,

@@ -14,6 +14,7 @@ struct TaskItem: Identifiable, Codable, Hashable, Sendable {
     var lastSyncedAt: Date
     var completedAt: Date?
     var isRemovedFromSource: Bool
+    var completionIsKnown: Bool = false
 
     init(
         id: UUID = UUID(),

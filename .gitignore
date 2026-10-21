@@ -14,4 +14,8 @@ xcuserdata/
 *.authtoken
 Secrets.swift
 credentials.json
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.ics
 

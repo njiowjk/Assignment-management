@@ -38,13 +38,23 @@ print "大学課題管理アプリをビルドして起動します…"
 
 cd "$PROJECT_DIR"
 
-SDKROOT="$APP_SDK" \
-CLANG_MODULE_CACHE_PATH="$BUILD_DIR/clang-cache" \
-exec swift run \
-    --sdk "$APP_SDK" \
-    --cache-path "$BUILD_DIR/cache" \
-    --config-path "$BUILD_DIR/config" \
-    --security-path "$BUILD_DIR/security" \
-    --manifest-cache local \
-    UniversityTaskManager
+export SDKROOT="$APP_SDK"
+export CLANG_MODULE_CACHE_PATH="$BUILD_DIR/clang-cache"
+SWIFT_OPTIONS=(
+    --sdk "$APP_SDK"
+    --cache-path "$BUILD_DIR/cache"
+    --config-path "$BUILD_DIR/config"
+    --security-path "$BUILD_DIR/security"
+    --manifest-cache local
+)
+swift build "${SWIFT_OPTIONS[@]}" --product UniversityTaskManager
+APP_BINARY_DIR="$(swift build "${SWIFT_OPTIONS[@]}" --show-bin-path)"
+
+# Launch Services経由で通常のアプリとして起動し、入力フォーカス・編集メニューを利用できるようにする。
+APP_BUNDLE="$BUILD_DIR/UniversityTaskManager.app"
+mkdir -p "$APP_BUNDLE/Contents/MacOS"
+cp "$PROJECT_DIR/AppBundle/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
+cp "$APP_BINARY_DIR/UniversityTaskManager" "$APP_BUNDLE/Contents/MacOS/UniversityTaskManager.next"
+mv -f "$APP_BUNDLE/Contents/MacOS/UniversityTaskManager.next" "$APP_BUNDLE/Contents/MacOS/UniversityTaskManager"
+exec open -W "$APP_BUNDLE" --args "$@"
 

@@ -17,6 +17,14 @@ struct TaskDetailView: View {
                 }
                 LabeledContent("取得元", value: task.source.rawValue)
                 LabeledContent("状態", value: statusText)
+                if !task.completionIsKnown {
+                    Text("提出状況は未確認です。元のLMSで確認してください。")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+                if task.isRemovedFromSource {
+                    Text("今回のカレンダーには見つかりませんでした。取得期間外の可能性があるため、課題を残しています。")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
             }
 
             if let detail = task.detail, !detail.isEmpty {
@@ -45,7 +53,10 @@ struct TaskDetailView: View {
     }
 
     private var statusText: String {
-        switch task.status {
+        if !task.completionIsKnown && task.status != .completed {
+            return bucket == .overdue ? "期限切れ（提出状況未確認）" : "提出状況未確認"
+        }
+        return switch task.status {
         case .active:
             bucket == .overdue ? "期限切れ" : "未完了"
         case .overdue:

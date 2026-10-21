@@ -25,6 +25,10 @@ struct TaskRowView: View {
             Label(deadlineText, systemImage: "clock")
                 .font(.caption)
                 .foregroundStyle(bucket == .overdue ? Color.red : Color.secondary)
+            if task.isRemovedFromSource {
+                Text("今回の取得範囲に見つかりません・保存済み")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
         }
         .padding(.vertical, 5)
         .accessibilityElement(children: .combine)
