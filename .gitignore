@@ -1,0 +1,17 @@
+.DS_Store
+.build/
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# Never commit local credentials, exported sessions, or authentication traces.
+*.env
+.env.*
+*.cookie
+*.cookies
+*.session
+*.authtoken
+Secrets.swift
+credentials.json
+
