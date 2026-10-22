@@ -13,6 +13,8 @@ struct Phase2Checks {
         try classificationChecks()
         try await bridgeChecks()
         try await persistenceChecks()
+        try await webClassChecks()
+        try await startupChecks()
         print("PASS: \(count) native/TypeScript integration checks")
     }
 
@@ -62,6 +64,87 @@ struct Phase2Checks {
         let sections = TaskSectionBuilder(classifier: classifier).sections(from: [pending, done, unknown], now: now)
         try check(sections.flatMap(\.tasks).map(\.externalID) == ["pending"], "home displays confirmed incomplete only")
         try check(!done.isVisibleOnHome && !unknown.isVisibleOnHome, "completed and unknown excluded from main task groups")
+    }
+
+    static func webClassChecks() async throws {
+        let base = WebClassSession.baseURL
+        for host in ["hoppii2025.hosei.ac.jp", "idp.hosei.ac.jp", "lms2025.hosei.ac.jp"] {
+            try check(WebClassSession.allowsNavigation(URL(string: "https://\(host)/")!), "official SSO host accepted")
+        }
+        for url in ["http://lms2025.hosei.ac.jp/", "https://evil.test/", "https://idp.hosei.ac.jp.evil.test/",
+                    "https://lms2025.hosei.ac.jp:8443/", "https://user:password@idp.hosei.ac.jp/"] {
+            try check(!WebClassSession.allowsNavigation(URL(string: url)!), "nonofficial navigation rejected")
+        }
+        let cookie = HTTPCookie(properties: [.name: "WCSynthetic", .value: "synthetic", .domain: base.host!,
+            .path: "/webclass/", .secure: "TRUE"])!
+        let session = WebClassSession(baseURL: base, cookies: [MoodleSession.Cookie(cookie)])
+        try check(session.isValid, "LMS-only session accepted")
+        for domain in ["hosei.ac.jp", ".hosei.ac.jp", "idp.hosei.ac.jp", "hoppii2025.hosei.ac.jp"] {
+            let other = HTTPCookie(properties: [.name: "SSO", .value: "synthetic", .domain: domain, .path: "/"])!
+            try check(!WebClassSession.accepts(MoodleSession.Cookie(other)), "university-wide and IdP cookies never persisted")
+        }
+        try check(!WebClassSession(baseURL: base, cookies: []).isValid, "empty session rejected")
+        let restored = try JSONDecoder().decode(WebClassSession.self, from: JSONEncoder().encode(session))
+        try check(restored.isValid && restored.cookies[0].nativeCookie?.value == "synthetic", "WebClass session JSON roundtrip")
+        do {
+            _ = try await BackendClient().fetchWebClass()
+            throw CheckFailure(label: "anonymous WebClass fetch succeeded")
+        } catch let error as AppFailure {
+            try check(error == .webClassLoginRequired, "TypeScript WebClass auth error crosses native bridge")
+        }
+
+        // Test both failure directions without any university network or real Keychain access.
+        for failedSource: TaskSource in [.moodle, .webClass] {
+            let repository = try CoreDataTaskRepository(inMemory: true)
+            _ = try await repository.merge([remote(source: failedSource, completed: false)], source: failedSource, at: now)
+            let old = try repository.fetchTasks().first!
+            let credentials = SyntheticCredentials(webSession: session)
+            let vm = HomeViewModel(repository: repository, credentials: credentials, connectorFactory: { source, _ in
+                SyntheticConnector(source: source, shouldFail: source == failedSource)
+            })
+            await vm.loadCredentials()
+            try check(vm.hasAnySource && vm.hasWebClassSession && vm.isConfigured, "independent source configuration loaded")
+            await vm.syncAll()
+            let healthySource: TaskSource = failedSource == .moodle ? .webClass : .moodle
+            let tasks = try repository.fetchTasks()
+            try check(tasks.first(where: { $0.source == failedSource }) == old, "failed source retains exact task cache")
+            try check(try repository.lastSyncedAt(for: failedSource) == now, "failed source keeps last success timestamp")
+            try check(tasks.contains(where: { $0.source == healthySource }), "other LMS sync succeeds despite source failure")
+            try check(vm.statusText(for: failedSource).contains("通信できません"), "per-source failure remains visible")
+            try check(vm.statusText(for: healthySource).contains("最終同期"), "healthy source has own success timestamp")
+            try check(!vm.isSyncing, "sync state is cleared on mixed success")
+        }
+    }
+
+    static func startupChecks() async throws {
+        let repository = try CoreDataTaskRepository(inMemory: true)
+        _ = try await repository.merge([remote(completed: false)], source: .moodle, at: now)
+        let credentials = StartupCredentials()
+        let vm = HomeViewModel(repository: repository, credentials: credentials)
+        try check(credentials.readCount == 0, "constructing the app model never opens Keychain")
+        try check(vm.visibleTaskCount == 1, "offline cache is visible before credential authentication")
+        let first = Task { await vm.loadCredentials() }
+        let second = Task { await vm.loadCredentials() }
+        let limit = Date().addingTimeInterval(2)
+        while !credentials.isWaiting && Date() < limit { try await Task.sleep(for: .milliseconds(2)) }
+        try check(credentials.isWaiting, "credential loading started in background")
+        try check(vm.isLoadingCredentials && !credentials.readOnMainThread, "Keychain authentication never blocks the main actor")
+        vm.reload()
+        try check(vm.visibleTaskCount == 1 && vm.statusText(for: .moodle).contains("確認中"), "UI stays usable while authentication waits")
+        credentials.resume()
+        await first.value
+        await second.value
+        try check(!vm.isLoadingCredentials && vm.isConfigured, "credentials become available after authentication")
+        try check(credentials.readCount == 2, "concurrent window starts share one credential read")
+        await vm.loadCredentials()
+        try check(credentials.readCount == 2, "reopening a window does not trigger startup Keychain reads again")
+
+        let denied = HomeViewModel(repository: repository, credentials: DeniedCredentials())
+        await denied.loadCredentials()
+        try check(!denied.isLoadingCredentials && denied.errorMessage != nil, "denied Keychain access becomes a visible error, not a stuck launch")
+        try check(denied.visibleTaskCount == 1, "denied authentication preserves visible offline cache")
+        try check(denied.statusText(for: .moodle).contains("Keychain") && denied.statusText(for: .webClass).contains("Keychain"),
+                  "each source reports credential access failure")
     }
 
     static func bridgeChecks() async throws {
@@ -163,4 +246,52 @@ struct CheckFailure: Error { let label: String }
 struct FailingConnector: TaskSourceConnector {
     let source: TaskSource = .moodle
     func fetchTasks() async throws -> [RemoteTask] { throw AppFailure.network }
+}
+
+struct SyntheticCredentials: CalendarCredentialStore {
+    let webSession: WebClassSession
+    func calendarURL() throws -> URL? { URL(string: "https://example.test/calendar/feed?authtoken=synthetic") }
+    func saveCalendarURL(_ text: String) throws {}
+    func webClassSession() throws -> WebClassSession? { webSession }
+    func moodleSession(for calendarURL: URL) throws -> MoodleSession? {
+        MoodleSession(baseURL: KeychainService.moodleRoot(for: calendarURL), cookies: [])
+    }
+}
+
+struct SyntheticConnector: TaskSourceConnector {
+    let source: TaskSource
+    let shouldFail: Bool
+    func fetchTasks() async throws -> [RemoteTask] {
+        if shouldFail { throw AppFailure.network }
+        return [RemoteTask(externalID: "synthetic", source: source, courseName: "授業", title: "課題", deadline: .now, isCompleted: false)]
+    }
+}
+
+/// Simulates a system authentication prompt without touching the user's Keychain.
+final class StartupCredentials: CalendarCredentialStore, @unchecked Sendable {
+    private let lock = NSLock()
+    private let gate = DispatchSemaphore(value: 0)
+    private var reads = 0
+    private var waiting = false
+    private var mainThread = false
+    var readCount: Int { lock.withLock { reads } }
+    var isWaiting: Bool { lock.withLock { waiting } }
+    var readOnMainThread: Bool { lock.withLock { mainThread } }
+    func resume() { gate.signal() }
+    func calendarURL() throws -> URL? {
+        lock.withLock { reads += 1; waiting = true; mainThread = mainThread || Thread.isMainThread }
+        guard gate.wait(timeout: .now() + 3) == .success else { throw AppFailure.keychain }
+        return URL(string: "https://example.test/calendar/feed?authtoken=synthetic")
+    }
+    func webClassSession() throws -> WebClassSession? {
+        lock.withLock { reads += 1; mainThread = mainThread || Thread.isMainThread }
+        return nil
+    }
+    func saveCalendarURL(_ text: String) throws {}
+}
+
+struct DeniedCredentials: CalendarCredentialStore {
+    func calendarURL() throws -> URL? { throw AppFailure.keychain }
+    func webClassSession() throws -> WebClassSession? { throw AppFailure.keychain }
+    func saveCalendarURL(_ text: String) throws { throw AppFailure.keychain }
 }

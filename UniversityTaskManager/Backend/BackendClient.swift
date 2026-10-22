@@ -23,6 +23,7 @@ struct BackendClient: Sendable {
     private struct WebClassRequest: Encodable, Sendable {
         let version = 1
         let command = "fetchWebClass"
+        let session: WebClassSession?
     }
     private struct MergeRequest: Encodable, Sendable {
         let version = 1
@@ -54,8 +55,8 @@ struct BackendClient: Sendable {
         try await request(ParseRequest(calendarBase64: data.base64EncodedString(), timeZone: timeZone))
     }
 
-    func fetchWebClass() async throws -> [RemoteTask] {
-        try await request(WebClassRequest())
+    func fetchWebClass(session: WebClassSession? = nil) async throws -> [RemoteTask] {
+        try await request(WebClassRequest(session: session))
     }
 
     func merge(existing: [TaskItem], tasks: [RemoteTask], source: TaskSource, at date: Date) async throws -> MergeResult {
@@ -85,6 +86,8 @@ struct BackendClient: Sendable {
         if response.ok, let result = response.result { return result }
         switch response.error?.code {
         case "moodleLoginRequired": throw AppFailure.moodleLoginRequired
+        case "webClassLoginRequired": throw AppFailure.webClassLoginRequired
+        case "invalidWebClassData": throw AppFailure.invalidWebClassData
         case "notConfigured": throw ConnectorError.notConfigured(source: .webClass)
         case "invalidURL": throw AppFailure.invalidURL
         case "invalidCalendar": throw AppFailure.invalidCalendar

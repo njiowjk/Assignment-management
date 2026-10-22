@@ -23,6 +23,8 @@ swiftc -swift-version 6 -parse-as-library -sdk "$APP_SDK" \
     "$PROJECT_DIR"/UniversityTaskManager/Persistence/*.swift \
     "$PROJECT_DIR"/UniversityTaskManager/Connectors/TaskSourceConnector.swift \
     "$PROJECT_DIR"/UniversityTaskManager/Connectors/Moodle/*.swift \
+    "$PROJECT_DIR"/UniversityTaskManager/Connectors/WebClass/*.swift \
+    "$PROJECT_DIR"/UniversityTaskManager/ViewModels/*.swift \
     "$PROJECT_DIR"/UniversityTaskManager/Services/*.swift \
     "$PROJECT_DIR"/UniversityTaskManager/Backend/*.swift \
     "$PROJECT_DIR"/Tests/Phase2Checks/Checks.swift \

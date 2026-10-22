@@ -1,5 +1,6 @@
 export type ErrorCode = "invalidURL" | "invalidCalendar" | "unsupportedCalendar" |
-  "network" | "authentication" | "server" | "tooLarge" | "backend" | "notConfigured" | "moodleLoginRequired";
+  "network" | "authentication" | "server" | "tooLarge" | "backend" | "notConfigured" | "moodleLoginRequired" |
+  "webClassLoginRequired" | "invalidWebClassData";
 
 export class BackendError extends Error {
   constructor(readonly code: ErrorCode) { super(code); }

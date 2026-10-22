@@ -1,11 +1,13 @@
 import Foundation
 
-/// 実際のHOPPII/WebClass通信フローを確認した後にのみ実装する。
+/// 調査済みの課題一覧読取APIをTypeScriptから呼ぶ薄いアダプター。
 struct WebClassConnector: TaskSourceConnector {
     let source: TaskSource = .webClass
+    var credentials: any CalendarCredentialStore = KeychainService()
 
     func fetchTasks() async throws -> [RemoteTask] {
-        try await BackendClient().fetchWebClass()
+        guard let session = try credentials.webClassSession() else { throw AppFailure.webClassLoginRequired }
+        return try await BackendClient().fetchWebClass(session: session)
     }
 }
 

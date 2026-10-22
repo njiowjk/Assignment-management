@@ -6,11 +6,39 @@ protocol CalendarCredentialStore: Sendable {
     func saveCalendarURL(_ text: String) throws
     func moodleSession(for calendarURL: URL) throws -> MoodleSession?
     func saveMoodleSession(_ session: MoodleSession, for calendarURL: URL) throws
+    func webClassSession() throws -> WebClassSession?
+    func saveWebClassSession(_ session: WebClassSession) throws
 }
 
 extension CalendarCredentialStore {
     func moodleSession(for calendarURL: URL) throws -> MoodleSession? { nil }
     func saveMoodleSession(_ session: MoodleSession, for calendarURL: URL) throws { throw AppFailure.keychain }
+    func webClassSession() throws -> WebClassSession? { nil }
+    func saveWebClassSession(_ session: WebClassSession) throws { throw AppFailure.keychain }
+}
+
+struct WebClassSession: Codable, Sendable {
+    static let baseURL = URL(string: "https://lms2025.hosei.ac.jp/webclass/")!
+    static let portalURL = URL(string: "https://hoppii2025.hosei.ac.jp/portal/")!
+    static let dashboardURL = baseURL.appendingPathComponent("ip_mods.php/plugin/score_summary_table/dashboard")
+    let baseURL: URL
+    let cookies: [MoodleSession.Cookie]
+
+    static func allowsNavigation(_ url: URL) -> Bool {
+        url.scheme == "https" && (url.port == nil || url.port == 443) && url.user == nil && url.password == nil &&
+        ["hoppii2025.hosei.ac.jp", "idp.hosei.ac.jp", "lms2025.hosei.ac.jp"].contains(url.host?.lowercased() ?? "")
+    }
+
+    static func accepts(_ cookie: MoodleSession.Cookie) -> Bool {
+        // Do not persist Hoppii/IdP or university-wide SSO cookies.
+        let path = Self.dashboardURL.path
+        let pathMatches = path == cookie.path || (path.hasPrefix(cookie.path) &&
+            (cookie.path.hasSuffix("/") || path.dropFirst(cookie.path.count).hasPrefix("/")))
+        return cookie.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".")) == Self.baseURL.host &&
+            cookie.matches(Self.dashboardURL) && cookie.path.hasPrefix("/") && pathMatches
+    }
+
+    var isValid: Bool { baseURL == Self.baseURL && !cookies.isEmpty && cookies.allSatisfy(Self.accepts) }
 }
 
 struct MoodleSession: Codable, Sendable {
@@ -52,6 +80,34 @@ struct MoodleSession: Codable, Sendable {
 struct KeychainService: CalendarCredentialStore {
     private let service = "jp.universitytaskmanager.moodle"
     private let account = "calendar-feed-url"
+
+    private var webClassQuery: [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword,
+         kSecAttrService as String: "jp.universitytaskmanager.webclass",
+         kSecAttrAccount as String: "webclass-session"]
+    }
+
+    func webClassSession() throws -> WebClassSession? {
+        var query = webClassQuery
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess, let data = item as? Data,
+              let session = try? JSONDecoder().decode(WebClassSession.self, from: data) else { throw AppFailure.keychain }
+        return session.isValid ? session : nil
+    }
+
+    func saveWebClassSession(_ session: WebClassSession) throws {
+        guard session.isValid else { throw AppFailure.webClassLoginRequired }
+        let values: [String: Any] = [kSecValueData as String: try JSONEncoder().encode(session),
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
+        let status = SecItemUpdate(webClassQuery as CFDictionary, values as CFDictionary)
+        if status == errSecItemNotFound {
+            guard SecItemAdd(webClassQuery.merging(values) { _, new in new } as CFDictionary, nil) == errSecSuccess else { throw AppFailure.keychain }
+        } else if status != errSecSuccess { throw AppFailure.keychain }
+    }
 
     static func moodleRoot(for calendarURL: URL) -> URL {
         var parts = URLComponents(url: calendarURL, resolvingAgainstBaseURL: false)!

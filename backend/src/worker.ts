@@ -2,7 +2,7 @@ import { BackendError, safeError } from "./errors.js";
 import { mergeTasks } from "./merge.js";
 import { parseICS } from "./connectors/ics-parser.js";
 import { MoodleConnector } from "./connectors/moodle.js";
-import { WebClassConnector } from "./connectors/webclass.js";
+import { WebClassConnector, decodeWebClassSession } from "./connectors/webclass.js";
 import { checkCompletions } from "./connectors/moodle-completion.js";
 import { decodeSession } from "./connectors/moodle-session.js";
 import { calendarURL, localTasks, record, remoteTasks, source, text, timestamp } from "./validation.js";
@@ -19,7 +19,7 @@ async function execute(value: unknown): Promise<unknown> {
       if (request.session == null) return tasks;
       return checkCompletions(tasks, localTasks(request.existing ?? []), decodeSession(request.session, calendarURL(url)));
     }
-    case "fetchWebClass": return new WebClassConnector().fetchTasks();
+    case "fetchWebClass": return new WebClassConnector(decodeWebClassSession(request.session)).fetchTasks();
     case "parseICS":
       return parseICS(Buffer.from(text(request.calendarBase64), "base64"), text(request.timeZone));
     case "merge":

@@ -33,19 +33,19 @@ struct HomeView: View {
                     } label: {
                         Label("設定", systemImage: "gearshape")
                     }
+                    .disabled(viewModel.isLoadingCredentials)
                     Button {
                         if viewModel.isDemo { viewModel.reload() }
-                        else { Task { await viewModel.syncMoodle() } }
+                        else { Task { await viewModel.syncAll() } }
                     } label: {
                         Label("今すぐ同期", systemImage: "arrow.clockwise")
                     }
-                    .disabled(viewModel.isSyncing || (!viewModel.isDemo && !viewModel.isConfigured))
+                    .disabled(viewModel.isSyncing || (!viewModel.isDemo && !viewModel.hasAnySource))
                 }
             }
         }
         .frame(minWidth: 620, minHeight: 520)
         .sheet(isPresented: $showingSettings) { SettingsView(viewModel: viewModel) }
-        .task { await viewModel.syncMoodle() }
         .onReceive(clock) { _ in viewModel.reload() }
         .onChange(of: scenePhase) { phase in if phase == .active { viewModel.reload() } }
     }
@@ -95,7 +95,10 @@ struct HomeView: View {
 
                 Spacer()
 
-                if viewModel.isSyncing {
+                if viewModel.isLoadingCredentials {
+                    ProgressView().controlSize(.small)
+                    Text("Keychainを確認中…")
+                } else if viewModel.isSyncing {
                     ProgressView().controlSize(.small)
                     Text("同期中…")
                 } else if let date = viewModel.lastUpdatedAt {
@@ -105,9 +108,16 @@ struct HomeView: View {
                 }
             }
             .font(.caption)
-            Text(viewModel.isDemo ? "サンプルデータを表示中" : "Moodle：完了を確認した課題は非表示です。WebClass：未連携")
-                .font(.caption).foregroundStyle(.secondary)
-            if !viewModel.isDemo && viewModel.isConfigured && !viewModel.hasMoodleSession {
+            if viewModel.isDemo {
+                Text("サンプルデータを表示中").font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("Moodle：\(viewModel.statusText(for: .moodle))").font(.caption).foregroundStyle(.secondary)
+                Text("WebClass：\(viewModel.statusText(for: .webClass))").font(.caption).foregroundStyle(.secondary)
+            }
+            if !viewModel.isDemo && !viewModel.isLoadingCredentials && (!viewModel.isWebClassConfigured || !viewModel.hasWebClassSession) {
+                Button("WebClassにログインして連携") { showingSettings = true }.font(.callout)
+            }
+            if !viewModel.isDemo && !viewModel.isLoadingCredentials && viewModel.isConfigured && !viewModel.hasMoodleSession {
                 Button("Moodleにログインして提出状況を確認") { showingSettings = true }
                     .font(.callout)
             }
@@ -124,18 +134,26 @@ struct HomeView: View {
 
     private var emptyState: some View {
         VStack(spacing: 12) {
-            Image(systemName: viewModel.isConfigured ? "calendar" : "link.badge.plus")
+          if viewModel.isLoadingCredentials {
+            ProgressView()
+            Text("保存済みのログイン情報を確認しています")
+                .font(.title3.weight(.semibold))
+            Text("Keychainの確認画面が出た場合は認証してください。課題画面はこのまま開いています。")
+                .foregroundStyle(.secondary)
+          } else {
+            Image(systemName: viewModel.hasAnySource ? "calendar" : "link.badge.plus")
                 .font(.system(size: 44))
                 .foregroundStyle(.blue)
-            Text(viewModel.isConfigured ? "未完了の課題はありません" : "Moodleを連携しましょう")
+            Text(viewModel.hasAnySource ? "未完了の課題はありません" : "LMSを連携しましょう")
                 .font(.title3.weight(.semibold))
-            Text(viewModel.isConfigured ? "同期すると、カレンダーの予定を締切順に表示します。" : "設定でカレンダーURLを登録すると、課題を取得できます。")
+            Text(viewModel.hasAnySource ? "同期すると、Moodle・WebClassの課題を締切順に表示します。" : "設定でMoodleまたはWebClassを連携すると、課題を取得できます。")
                 .foregroundStyle(.secondary)
-            if !viewModel.isConfigured {
-                Button("Moodle連携を設定") { showingSettings = true }
+            if !viewModel.hasAnySource {
+                Button("LMS連携を設定") { showingSettings = true }
                     .buttonStyle(.borderedProminent)
                     .disabled(!viewModel.storageAvailable || viewModel.isDemo)
             }
+          }
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity)

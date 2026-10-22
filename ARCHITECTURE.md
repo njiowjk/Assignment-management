@@ -10,7 +10,7 @@
 | LMS共通モデルと正規化 | Keychainの保存・読取 |
 | UIDによる差分更新・締切変更検出 | Core Dataの読み書きとトランザクション |
 | 完了状態・取得不能/消失の取扱い | Node子プロセスの起動・キャンセル |
-| WebClassの将来の通信・解析 | 将来のWKWebView・通知・ログイン項目 |
+| WebClassの通信・正規化・完了判定 | WKWebView・将来の通知・ログイン項目 |
 
 ## データフロー
 
@@ -19,7 +19,7 @@ SwiftUI → ViewModel → Swiftの薄いConnector → BackendClient
                                               ↓ stdin / stdout JSON
                                       TypeScript worker
                                       ├─ MoodleConnector → ICSParser
-                                      ├─ WebClassConnector（未設定）
+                                      ├─ WebClassConnector → 学生用課題一覧API
                                       └─ mergeTasks（更新ルール）
                                               ↓
                               CoreDataTaskRepository（保存のみ）
@@ -36,7 +36,7 @@ UIはLMS固有のHTTPやカレンダー形式を知らない。既存のSwift IC
 - DTEND優先、なければDTSTART。終日のDTENDは排他的。提出状態はICSから推測せず、ログイン済みセッションで別途取得する。
 - `mergeTasks` は副作用のない関数。対象Sourceの課題のみを返す。UUID・初回検出日時を保持し、消失はフラグだけで記録する。
 - `isCompleted == null` は不明。確認済みの完了を上書きしない。
-- WebClassは実通信を確認するまで未設定エラーを返す。
+- WebClassは法政大学で確認した固定の読取APIのみ使用する。他ホストへ一般化しない。
 - HTTPは60秒・8MiB上限、HTTPS同一オリジンのリダイレクトのみ許可する。
 
 ## Moodleの自動完了判定
@@ -66,7 +66,25 @@ UIはLMS固有のHTTPやカレンダー形式を知らない。既存のSwift IC
 - Swiftは子をメインスレッド外で待ち、キャンセルまたは90秒タイムアウトで終了させる。
 - 外部向けの待受ポートやクラウドサーバーは使わない。
 
+## WebClass連携
+
+- 実際のHOPPII → OpenAM/Shibboleth → WebClass接続、ログイン後の課題一覧、読取APIレスポンスを調査済み。2026-10-22に利用者がアプリ内ログイン・初回同期の成功を確認。すべての教材種類・状態の実データ網羅検証ではない。
+- WKWebViewはnonPersistent。ナビゲーションは調査済み3ホスト（hoppii2025/idp/lms2025.hosei.ac.jp）のHTTPSに限定する。別窓リンクは同じWebViewへ渡す。
+- 公式のdashboardメタデータでログイン状態を確認し、連携操作時にWebClassホスト用Cookieのみ保存する。IdP・HOPPII・大学全体に作用するCookieは保存しない。
+- Keychainは既存Moodleとは別のservice `jp.universitytaskmanager.webclass` / account `webclass-session`。パスワード・HTML・生レスポンスを保存しない。
+- バックエンドはdashboardの本人識別情報と、学生用courses/contentsをGETする。API_URL/TOP_URLは固定値と照合し、HTMLで指定された任意のURLを信用しない。
+- 教員権限のあるコースは対象外。本人に一致するscoresの一件だけを使い、Taskには点数・氏名・個人識別情報を含めない。
+- 締切はAPIの秒を保持してAsia/Tokyoとして解釈する。非公開・締切なしは対象外。年度・学期では除外しない。
+- 外部IDはgroup_id:contents_id。締切やタイトルをIDに含めない。元リンクは教材実行ページでなく授業へのリンク。
+- 合格点・公開状態・回答日時・アンケート匿名性を、調査したフロントエンドの学生フィルターと同じ条件で判定する。矛盾や不明はnull。匿名アンケートの実施状況を推測しない。
+- 最大3並列、全体60秒、1応答8MiB。リダイレクトを追わず、ログイン切れは固定エラー。Cookieを他ホストへ転送しない。
+- 失敗・型不一致を空配列に変換しない。全授業の取得成功後だけ既存のmerge/DBトランザクションへ渡す。
+- UIはLMS別の成功時刻・エラーを持つ。一方のLMSに失敗しても他方を同期し、失敗側のキャッシュは維持する。
+
 ## ネイティブ保存と互換性
+
+- App/StateObjectの初期化ではKeychainへアクセスしない。SwiftUIのウィンドウ生成後に一度だけ認証情報をバックグラウンドで読み、複数ウィンドウの同時開始でも同じ読込Taskを共有する。
+- Keychain確認中も保存済み課題を表示する。認証拒否をエラーとして表示し、ウィンドウ登録時・認証確認後・Dock再オープン時に一覧を前面へ戻す。認証権限やKeychainのアクセス制御は変更しない。
 
 - Core Dataのエンティティ名・属性名・SQLite保存先・JSON保存形式は変更しない。
 - Keychainのservice/accountも変更しない。利用者の再登録は不要。
@@ -86,5 +104,5 @@ UIはLMS固有のHTTPやカレンダー形式を知らない。既存のSwift IC
 
 ## 後続フェーズ
 
-Moodleのログイン後の実データでの確認、WebClassの通信調査・実装を進める。その後、通知・MenuBarExtra・SMAppService・定期同期をネイティブアダプターから接続する。Version 1の受入条件は引き続き未完了。
+通知・MenuBarExtra・SMAppService・定期同期をネイティブアダプターから接続する。WebClassの未知の状態は不明として保持し、実運用で確認を続ける。Version 1の受入条件は引き続き未完了。
 

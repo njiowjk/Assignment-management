@@ -139,8 +139,8 @@ test("redirect policy accepts only same HTTPS origin", () => {
     assert.equal(allowsRedirect(original, new URL(next)), false);
   }
 });
-test("WebClass remains explicitly unconfigured until real flow is investigated", async () => {
-  await assert.rejects(new WebClassConnector().fetchTasks(), error => error instanceof BackendError && error.code === "notConfigured");
+test("WebClass requires a session and does not fetch anonymously", async () => {
+  await assert.rejects(new WebClassConnector().fetchTasks(), error => error instanceof BackendError && error.code === "webClassLoginRequired");
 });
 test("Moodle fetch returns parsed feed without cookies or disk cache", async () => {
   const result = await new MoodleConnector("https://example.test/", zone, async (_url, options) => {
