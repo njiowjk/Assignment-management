@@ -29,4 +29,5 @@ swiftc -swift-version 6 -parse-as-library -sdk "$APP_SDK" \
     "$PROJECT_DIR"/UniversityTaskManager/Backend/*.swift \
     "$PROJECT_DIR"/Tests/Phase2Checks/Checks.swift \
     -o "$BUILD_DIR/phase2-checks"
-exec "$BUILD_DIR/phase2-checks"
+node --test "$PROJECT_DIR"/scripts/tests/*.test.mjs
+exec node "$PROJECT_DIR/scripts/run-native-checks.mjs" "$BUILD_DIR/phase2-checks"

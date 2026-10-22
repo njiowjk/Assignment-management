@@ -2,7 +2,7 @@
 
 Moodle と WebClass に分散する大学課題を、締切順にまとめて確認するための macOS ネイティブアプリです。
 
-現在は **Phase 5（課題・締切通知）** です。画面はSwiftUI、バックエンドはMac内で動くTypeScript/Node.jsです。取得した課題を次の順で表示します。
+現在は **Phase 6（配布・運用安定化）** です。画面はSwiftUI、バックエンドはアプリに同梱したTypeScript/Node.jsです。Node同梱・DMG作成・移動後の自己診断に対応しました。一般配布用のDeveloper ID署名・Apple公証は、証明書の準備後に実施します。取得した課題を次の順で表示します。
 
 1. 期限切れ
 2. 今日
@@ -12,22 +12,70 @@ Moodle と WebClass に分散する大学課題を、締切順にまとめて確
 
 各グループ内は締切の早い順です。通常の一覧は、未完了が確認できた課題だけを表示します。完了済みは自動的に除外し、判定できなかった課題は「確認できなかった課題」に分けて保存します。
 
-## ターミナルから起動
+## 配布版のインストール
 
-Swift Command Line ToolsとNode.js 22以降（npmを含む）が必要です。このMacではインストール済みです。Xcodeアプリを開かなくても、次のコマンドでビルドして起動できます。
+DMG内の `UniversityTaskManager.app` を `Applications` へドラッグし、Applicationsから開きます。完成したアプリの実行に、Node.js・npm・Xcode・ターミナルは不要です。初回のMoodle / WebClassログインと通知の許可は、各Macで行います。
+
+このMacで作る標準のDMGは **local-preview（ローカル検証用）** で、Apple公証済みの一般配布版ではありません。Gatekeeperを無効化したり隔離属性を削除したりする手順は含めません。他の利用者へ一般配布する前に、下記のDeveloper ID署名・公証と実機確認を完了してください。
+
+「Macログイン時に起動」はApplicationsへ移してから設定してください。ビルドフォルダーから登録済みの場合は、旧版側で一度OFFにし、インストール版からONにし直してください。アプリを移動・更新する際は起動中の版を終了し、データの保存先やKeychainは削除しません。
+
+現時点で実機検証している成果物はApple Silicon（arm64）、このMacのmacOS 26環境です。設定上の最低OSはmacOS 13ですが、macOS 13・Intel Macでの動作確認は別途必要です。Universal版ではありません。
+
+## ターミナルから開発版をビルド・起動
+
+ソースからのビルドにはSwift Command Line ToolsとNode.js 22以降（npmを含む）が必要です。これは完成したアプリの実行要件ではありません。このMacではインストール済みです。Xcodeアプリを開かなくても、次のコマンドでビルドして起動できます。
 
 ```sh
 cd /Users/sakakihondaihase/Desktop/assin
 ./run.sh
 ```
 
-初回はバックエンドの依存を `npm ci` で取得してからビルドします。`.build/UniversityTaskManager.app` にコンパイルしたバックエンドを同梱し、通知元を識別するためローカル用のad-hoc署名を付けて、通常のMacアプリとして起動します。署名用の証明書は不要ですが、配布用の署名・公証ではありません。アプリを終了するときは `Command + Q` を押します。ターミナルの `Control + C` は起動待ちの終了用です。
+初回は依存を `npm ci` で取得し、公式Node.js 22.23.4のアーカイブをダウンロードして、固定SHA-256で照合します。`.build/UniversityTaskManager.app` にバックエンド・Node本体・ライセンスを同梱し、内側のNodeから順にHardened Runtime付きad-hoc署名を付けます。署名用の証明書は不要ですが、一般配布用の署名・公証ではありません。アプリを終了するときは `Command + Q` を押します。ターミナルの `Control + C` は起動待ちの終了用です。
 
 課題ウィンドウを表示し、保存済みの認証情報をバックグラウンドで確認します。起動時は認証画面を出しません。Keychainの許可が必要な場合は、設定の「保存済み連携情報を読み込む」を押してください。この操作ではWebClass、MoodleカレンダーURL、Moodleセッションの最大3項目に許可確認が出る場合があります。ウィンドウが背面や最小化状態になった場合はDockのアプリアイコン、またはアプリの「ファイル」→「課題一覧を開く」（Command + 1）で戻せます。
 
-ビルドだけ行う場合は `./run.sh --build-only` を実行します。Nodeの実行ファイルはこのMacにインストールされたものを使います。別のMacへ配布するためのNode本体同梱はまだ行っていません。
+ビルドだけなら `./run.sh --build-only`、最適化版なら `./run.sh --build-only --release` を実行します。ビルド時のNode.jsがHomebrew版でも、完成したアプリはHomebrewへ依存しない公式Node本体を内部から起動します。取得済みアーカイブは `.build/node-runtime/` にキャッシュし、再利用時もハッシュを照合します。
 
 サンプル画面だけを確認する場合は `./run.sh --demo` を実行します。デモでは実際のDBやKeychainにアクセスしません。
+
+## DMGの作成・検証
+
+```sh
+./release.sh
+```
+
+最適化ビルド・Node同梱・署名・別フォルダーへ移動した自己診断・DMG作成・DMG整合性確認・読み取り専用マウント内からの自己診断を実行します。起動中のアプリは再起動しません。作成物は毎回新しい `dist/UniversityTaskManager-.../` フォルダーへ出力し、既存成果物を上書きしません。
+
+- `*.dmg`：Applicationsへのドラッグ用リンクと「はじめに」を含むインストールイメージ
+- `SHA256SUMS.txt`：最終DMGのSHA-256
+- `verification.json`：CPU・Nodeバージョン・署名／移動／DMG内診断の結果と公証状態
+- `はじめに.txt`：導入と制限の案内
+
+全検証が終わるまでイメージ名を `.incomplete.dmg` とし、失敗した成果物を配布完了版として扱いません。ソース、node_modules、大学のURL・Cookie・DB・ユーザー設定は配布物へコピーしません。
+
+アプリ単体を検証する場合：
+
+```sh
+node scripts/verify-app.mjs .build/UniversityTaskManager.app
+.build/UniversityTaskManager.app/Contents/MacOS/UniversityTaskManager --self-test
+```
+
+自己診断は模擬データだけでバックエンドの起動、ICSタイムゾーン、課題更新、同期予定、通知予定を確認し、JSONで結果を返します。画面・DB・Keychain・通知許可・大学への通信には触れません。検証スクリプトは、空白を含む別パスとHomebrew抜きのPATHで実行し、環境変数によるバックエンド差し替えも無視されることを確認します。
+
+### 一般配布用の署名・公証
+
+このMacではDeveloper ID Application証明書が見つからないため、現段階でAppleへの提出は行っていません。証明書と `notarytool` の保存済みKeychainプロファイルを用意した後、次の明示的なコマンドで実行できます。
+
+```sh
+./release.sh --sign 'Developer ID Application: YOUR NAME (TEAMID)' --notary-profile 'YOUR_SAVED_PROFILE'
+```
+
+アカウントのパスワード・秘密鍵・APIキーをチャットやGitへ貼り付けないでください。このオプションを指定した場合だけAppleへアップロードします。`Accepted`、チケットの付与・検証、DMG内診断が成功した場合だけ `notarized.dmg` を完成名で出力します。証明書を指定した経路は、この環境では実行未確認です。
+
+[Appleの配布用コード署名](https://developer.apple.com/documentation/xcode/creating-distribution-signed-code-for-the-mac/)と[公証要件](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution)に従い、ネストしたNodeを先に署名します。NodeだけにJITの権限を付け、アプリ側のライブラリ検証やOSの保護を無効化しません。
+
+運用確認の残りは [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) にまとめています。
 
 ## Moodleの接続
 
@@ -88,7 +136,7 @@ URLは認証トークンを含むため、チャットやGitHubには貼り付�
 ./test.sh
 ```
 
-TypeScriptの型チェック・バックエンドのユニットテストと、Swiftから実際にNodeを呼ぶ結合テストを実行します。ICS解析、日時、差分更新、SQLite再読み込み、模擬HTTP通信、同期失敗時のデータ保持、通知予定・重複防止・取り消しを検証します。実際の大学アカウント・Keychain・OSの通知許可・ユーザー設定は使いません。
+TypeScriptの型チェック・バックエンドのユニットテスト、配布ツールのテストと、Swiftから実際にNodeを呼ぶ結合テストを実行します。ICS解析、日時、差分更新、SQLite再読み込み、模擬HTTP通信、同期失敗時のデータ保持、通知予定・重複防止・取り消し、相対ランタイム設定・外部パス拒否・ライセンス収録を検証します。初回はテスト用にも固定Nodeランタイムを取得します。実際の大学アカウント・Keychain・OSの通知許可・ユーザー設定は使いません。
 
 ## WebClassの接続
 
@@ -155,7 +203,7 @@ SwiftのMoodle/WebClass ConnectorはTypeScriptを呼ぶ薄いアダプターで�
 - フィードから消えた課題は削除・完了扱いにせず、取得範囲に見つからないことを表示します。
 - VEVENTのDTENDを優先し、なければDTSTARTを使います。終日のDTENDは排他的なため、その直前を期限とします。一般の予定も候補として表示する段階であり、課題のみの厳密な抽出は今後の実データ調査が必要です。
 - UTC、IANA TZID、浮動日時、終日、折り返し行に対応します。繰り返し予定・未知のタイムゾーン・破損データは黙って捨てず、同期を失敗にして保存済みデータを維持します。
-- 通知表示・終了後配信の実機確認と、Node本体同梱・配布用署名・公証は残っています。Version 1完成ではありません。
+- 利用者によるテスト通知の表示は確認済みです。実際の締切通知・提出後取消・終了後配信・Mac再ログインの確認と、一般配布用署名・公証は残っています。Version 1完成ではありません。
 
 WebClass調査で確認した接続先：`hoppii2025.hosei.ac.jp/portal/` → `idp.hosei.ac.jp/openam/` → HOPPIIの`portal/sso/Parm.php` → `lms2025.hosei.ac.jp/webclass/`。判定ルールは、大学が配信するダッシュボードの学生向け完了/未完了フィルターを参照しています。実アカウントの生データや認証情報はテスト・Gitに含めません。
 

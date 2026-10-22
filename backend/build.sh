@@ -13,21 +13,5 @@ if [[ ! -x node_modules/.bin/tsc || ! -x node_modules/.bin/esbuild ]]; then
 fi
 npm run build
 if [[ $# -gt 0 ]]; then
-    # app Resources内に、依存をまとめたworkerとNodeの実行パスだけを配置する。
-    node --input-type=module -e '
-      import { mkdirSync, copyFileSync, writeFileSync } from "node:fs";
-      import { join } from "node:path";
-      import { spawnSync } from "node:child_process";
-      const destination = join(process.argv[1], "Backend");
-      mkdirSync(destination, { recursive: true });
-      copyFileSync("dist/worker.mjs", join(destination, "worker.mjs"));
-      writeFileSync(join(destination, "runtime.json"), JSON.stringify({ nodeExecutable: process.execPath }));
-      const check = spawnSync(process.execPath, [join(destination, "worker.mjs")], {
-        input: JSON.stringify({ version: 1, command: "health" }), encoding: "utf8", timeout: 5000,
-      });
-      let ok = false;
-      try { const response = JSON.parse(check.stdout); ok = check.status === 0 && response.version === 1 && response.ok && response.result.protocolVersion === 1; }
-      catch {}
-      if (!ok) { console.error("TypeScriptバックエンドの起動確認に失敗しました。"); process.exit(1); }
-    ' "$1"
+    node "$BACKEND_DIR/../scripts/package-backend.mjs" "$1"
 fi

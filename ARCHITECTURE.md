@@ -97,15 +97,27 @@ UIはLMS固有のHTTPやカレンダー形式を知らない。既存のSwift IC
 ## ビルドとテスト
 
 - `backend/build.sh` は依存がなければnpm ciし、型チェックと単一workerへのバンドルを実施する。
-- `run.sh` はSwiftをビルドし、workerとNodeの実行パスをapp Resourcesへ配置する。通知元の識別用に生成appバンドル全体へad-hoc署名を付け、verifyする。生成バンドル直下のFinderInfoのみ除去し、隔離属性・provenance・元ファイルは変更しない。配布用署名・公証ではない。
-- このMacにインストールされたNodeを使う。独立配布用のNode本体同梱は後続作業。
+- `run.sh` はSwiftをビルドし、workerと相対ランタイム設定をResourcesへ、公式Node本体をContents/Helpersへ配置する。内側のNodeと外側のappにHardened Runtime付き署名を行う。既定はad-hocで、明示的な`--sign`でDeveloper IDを選べる。FileProviderが署名直後に空のFinderInfoを再付与する環境では、一時領域の同内容コピーを署名・strict検証し、署名された実行ファイルとCodeResourcesだけを生成appへ原子的に戻す。元appの隔離属性・ACL・provenanceは変更しない。
+- `scripts/node-runtime.json` にNode 22.23.4の公式HTTPS URLとarm64/x64のSHA-256を固定する。キャッシュのアーカイブも毎回照合・再展開し、未検証キャッシュの実行ファイルをそのまま使わない。HomebrewのNodeをコピーして外部dylibへ依存させない。
 - Xcodeにも同じビルドスクリプトを呼ぶフェーズを設定する。
 - `./test.sh` でTypeScriptの単体テストと、Swift→Node→Core Dataの結合テストを行う。
 - 実際の大学アカウント、Keychain、本番DBにはテストからアクセスしない。
 
 ## 後続フェーズ
 
-実際のmacOSで通知許可・表示・クリック・終了後配信を確認し、Node本体同梱・配布用署名・公証を進める。WebClassの未知の状態は不明として保持し、実運用で確認を続ける。Version 1の受入条件は引き続き未完了。
+テスト通知表示は2026-10-22に利用者が確認。通常の締切・取消・クリック・終了後配信・OSログイン時の起動を実機で確認し、証明書準備後にDeveloper ID署名とApple公証を実施する。WebClassの未知の状態は不明として保持する。Version 1の受入条件は引き続き未完了。
+
+## 独立配布と診断
+
+- 本体は`Contents/MacOS/UniversityTaskManager`、ネストした実行コードは`Contents/Helpers/node`、workerと固定相対パス`../../Helpers/node`の設定は`Contents/Resources/Backend`、ライセンスは`Contents/Resources/Licenses`へ配置する。外部Nodeのパスやnode_modulesは配布しない。
+- Swiftはバンドル内の固定パスだけを許可し、ヘルパーやworkerのシンボリックリンク差し替えを拒否する。開発用stdin/stdout結合テストの環境変数は非appのテスト実行ファイルだけで使い、配布appでは無視する。既存DBやKeychainの識別子は変更しない。
+- NodeはJITのentitlementだけを付与する。アプリ本体にJIT・署名なし実行メモリ・ライブラリ検証無効化・get-task-allow等を付与しない。ネストしたコードは内側から個別に署名し、署名時の`--deep`は使わない。検証時だけdeep検証する。
+- esbuildのmetafileで実際にバンドルした依存を列挙し、最寄りの実パッケージのLICENSE/COPYING/NOTICEを収録する。dist直下のtypeだけを持つpackage.jsonで探索を止めない。npm tarballにライセンス文書を含まないboolbase@1.0.0は公式ISC文書を補完する。Nodeは公式アーカイブのLICENSE全文を保持する。
+- `--self-test`はSwiftUI・NSApplication・DB・Keychain・通知サービスの初期化前に分岐し、模擬データのみでhealth/ICSタイムゾーン/merge/同期予定/通知予定を確認して終了する。エラーは固定JSON。Node内部のhealthだけでなく、Swiftからの実際のプロセス境界も通す。
+- `verify-app.mjs`はファイルのallowlistとリンクを確認し、署名・CPU一致・システム外dylib非依存を検証する。別の空白入りパスへコピーし、Homebrew抜きのPATHと無効な差し替え環境変数で自己診断する。元appのxattrには触れず、コピーをstrict検証する。
+- `release.sh`は最適化版をビルドし、既存出力を上書きしないdistサブフォルダーへDMGを作る。Applicationsへのリンクと説明を収録する。hdiutil整合性と読み取り専用マウント内での診断後に完成名へ変更し、SHA-256と検証結果を出力する。未完了は`.incomplete.dmg`で区別する。
+- 明示的にDeveloper ID証明書とnotarytoolの保存済みKeychainプロファイルを指定した場合だけ、公証サービスへアップロードする。Accepted・staple・validateを必須とし、失敗を公証済みと表示しない。現環境に証明書がないため、この経路の実行は未確認。アカウント情報や秘密鍵は保存しない。
+- 現ビルドはホストと同じ単一CPU用。macOS 13とIntel Macの実機確認・一般配布のGatekeeper確認は未実施。詳細は`RELEASE_CHECKLIST.md`。
 
 ## 常駐・スケジューリング
 

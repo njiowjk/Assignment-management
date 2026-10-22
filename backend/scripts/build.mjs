@@ -1,6 +1,7 @@
 import { build } from "esbuild";
+import { writeFileSync } from "node:fs";
 
-await build({
+const result = await build({
   entryPoints: ["src/worker.ts"],
   outfile: "dist/worker.mjs",
   bundle: true,
@@ -8,4 +9,6 @@ await build({
   target: "node22",
   format: "esm",
   sourcemap: false,
+  metafile: true,
 });
+writeFileSync("dist/metafile.json", JSON.stringify(result.metafile));

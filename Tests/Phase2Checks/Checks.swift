@@ -357,15 +357,33 @@ struct Phase2Checks {
 
         // Exercise the app-resource/runtime.json path, without process environment overrides.
         let resources = FileManager.default.temporaryDirectory.appendingPathComponent("backend-resources-" + UUID().uuidString)
+            .appendingPathComponent("Moved App.app/Contents/Resources")
         let directory = resources.appendingPathComponent("Backend")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let environment = ProcessInfo.processInfo.environment
         let worker = URL(fileURLWithPath: environment["ASSIGNMENT_BACKEND_DIR"]!).appendingPathComponent("worker.mjs")
         try FileManager.default.copyItem(at: worker, to: directory.appendingPathComponent("worker.mjs"))
-        let config = try JSONSerialization.data(withJSONObject: ["nodeExecutable": environment["ASSIGNMENT_NODE_EXECUTABLE"]!])
+        let helper = resources.deletingLastPathComponent().appendingPathComponent("Helpers/node")
+        try FileManager.default.createDirectory(at: helper.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: environment["ASSIGNMENT_BUNDLED_NODE_EXECUTABLE"]!).resolvingSymlinksInPath(), to: helper)
+        let config = try JSONSerialization.data(withJSONObject: ["version": 1, "nodeExecutable": "../../Helpers/node"])
         try config.write(to: directory.appendingPathComponent("runtime.json"))
         let packaged = try await BackendClient(resourceDirectory: resources).parseICS(feed, timeZone: "Asia/Tokyo")
         try check(packaged == tasks, "app resource layout resolves and executes bundled worker")
+        let selfCheck = try await BackendSelfCheck.run(backend: BackendClient(resourceDirectory: resources))
+        try check(selfCheck.ok && selfCheck.checks.count == 5, "standalone diagnostic exercises synthetic backend features without private data")
+        for unsafePath in [environment["ASSIGNMENT_NODE_EXECUTABLE"]!, "../../../node", "node"] {
+            let unsafe = try JSONSerialization.data(withJSONObject: ["version": 1, "nodeExecutable": unsafePath])
+            try unsafe.write(to: directory.appendingPathComponent("runtime.json"))
+            do { _ = try await BackendClient(resourceDirectory: resources).health(); throw CheckFailure(label: "external runtime accepted") }
+            catch let failure as AppFailure { try check(failure == .backend, "distributed runtime rejects external or arbitrary paths") }
+        }
+        try config.write(to: directory.appendingPathComponent("runtime.json"))
+        let removed = helper.deletingLastPathComponent().appendingPathComponent("node-original")
+        try FileManager.default.moveItem(at: helper, to: removed)
+        try FileManager.default.createSymbolicLink(at: helper, withDestinationURL: removed)
+        do { _ = try await BackendClient(resourceDirectory: resources).health(); throw CheckFailure(label: "symlink runtime accepted") }
+        catch let failure as AppFailure { try check(failure == .backend, "distributed runtime rejects symlink replacement") }
     }
 
     static func remote(title: String = "課題", due: Date = now, source: TaskSource = .moodle,

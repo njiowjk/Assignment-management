@@ -1,8 +1,31 @@
 import AppKit
 import SwiftUI
 import UserNotifications
+import Darwin
 
 @main
+enum UniversityTaskManagerEntry {
+    @MainActor static func main() {
+        if CommandLine.arguments.contains("--self-test") {
+            Task { @MainActor in
+                do {
+                    let result = try await BackendSelfCheck.run()
+                    let data = try JSONEncoder().encode(result)
+                    print(String(decoding: data, as: UTF8.self))
+                    Darwin.exit(0)
+                } catch {
+                    // Never print raw paths, credentials, backend exceptions, or HTML.
+                    print("{\"version\":1,\"ok\":false,\"error\":\"backendSelfCheckFailed\"}")
+                    Darwin.exit(1)
+                }
+            }
+            RunLoop.main.run()
+            Darwin.exit(1)
+        }
+        UniversityTaskManagerApp.main()
+    }
+}
+
 struct UniversityTaskManagerApp: App {
     @NSApplicationDelegateAdaptor(ApplicationDelegate.self) private var applicationDelegate
     @StateObject private var viewModel: HomeViewModel

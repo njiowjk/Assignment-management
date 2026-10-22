@@ -6,10 +6,21 @@ PROJECT_DIR="${0:A:h}"
 BUILD_DIR="$PROJECT_DIR/.build"
 CLT_SDK="/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk"
 BUILD_ONLY=0
-if [[ "${1:-}" == "--build-only" ]]; then
-    BUILD_ONLY=1
-    shift
-fi
+BUILD_CONFIGURATION=debug
+SIGNING_IDENTITY="-"
+APP_ARGS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --build-only) BUILD_ONLY=1; shift ;;
+        --release) BUILD_CONFIGURATION=release; shift ;;
+        --sign)
+            if [[ $# -lt 2 || -z "$2" ]]; then print -u2 "--signに署名IDを指定してください。"; exit 1; fi
+            SIGNING_IDENTITY="$2"; shift 2 ;;
+        --demo|--self-test) APP_ARGS+=("$1"); shift ;;
+        *) print -u2 "不明なオプションです: $1"; exit 1 ;;
+    esac
+done
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 if ! command -v swift >/dev/null 2>&1; then
     print -u2 "エラー: Swift Command Line Toolsが見つかりません。"
@@ -46,6 +57,7 @@ cd "$PROJECT_DIR"
 export SDKROOT="$APP_SDK"
 export CLANG_MODULE_CACHE_PATH="$BUILD_DIR/clang-cache"
 SWIFT_OPTIONS=(
+    --configuration "$BUILD_CONFIGURATION"
     --sdk "$APP_SDK"
     --cache-path "$BUILD_DIR/cache"
     --config-path "$BUILD_DIR/config"
@@ -62,13 +74,8 @@ cp "$PROJECT_DIR/AppBundle/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 cp "$APP_BINARY_DIR/UniversityTaskManager" "$APP_BUNDLE/Contents/MacOS/UniversityTaskManager.next"
 mv -f "$APP_BUNDLE/Contents/MacOS/UniversityTaskManager.next" "$APP_BUNDLE/Contents/MacOS/UniversityTaskManager"
 "$PROJECT_DIR/backend/build.sh" "$APP_BUNDLE/Contents/Resources"
-# UserNotifications identifies a real signed bundle, not SwiftPM's loose executable.
-# Local ad-hoc signing needs no certificate and grants no extra system permissions.
-# Finder/iCloud can attach FinderInfo to this generated .app directory, which codesign rejects.
-# Remove only that display metadata; retain provenance/quarantine and all source-file attributes.
-xattr -d com.apple.FinderInfo "$APP_BUNDLE" 2>/dev/null || true
-codesign --force --sign - --identifier jp.example.UniversityTaskManager "$APP_BUNDLE"
-codesign --verify --strict "$APP_BUNDLE"
+# Sign the nested Node helper first, then the app. Local builds use an ad-hoc identity.
+node "$PROJECT_DIR/scripts/sign-app.mjs" "$APP_BUNDLE" "$SIGNING_IDENTITY"
 if [[ "$BUILD_ONLY" == 1 ]]; then
     print "アプリのビルドが完了しました: $APP_BUNDLE"
     exit 0
@@ -104,5 +111,5 @@ for app_pid in "${RUNNING_APP_PIDS[@]}"; do
     fi
 done
 
-exec open -n -W "$APP_BUNDLE" --args "$@"
+exec open -n -W "$APP_BUNDLE" --args "${APP_ARGS[@]}"
 

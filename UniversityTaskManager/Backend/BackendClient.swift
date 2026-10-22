@@ -14,6 +14,9 @@ struct BackendClient: Sendable {
         let session: MoodleSession?
         let existing: [TaskItem]
     }
+    private struct HealthRequest: Encodable, Sendable { let version = 1; let command = "health" }
+    struct Health: Decodable, Sendable { let protocolVersion: Int }
+    func health() async throws -> Health { try await request(HealthRequest()) }
     private struct ParseRequest: Encodable, Sendable {
         let version = 1
         let command = "parseICS"
@@ -139,17 +142,25 @@ private struct BackendConfiguration: Sendable {
         let environment = ProcessInfo.processInfo.environment
         let directory: URL
         let nodePath: String
-        if resourceDirectory == nil, let testDirectory = environment["ASSIGNMENT_BACKEND_DIR"],
+        if resourceDirectory == nil, Bundle.main.bundleURL.pathExtension != "app",
+           let testDirectory = environment["ASSIGNMENT_BACKEND_DIR"],
            let testNode = environment["ASSIGNMENT_NODE_EXECUTABLE"] {
             directory = URL(fileURLWithPath: testDirectory)
             nodePath = testNode
         } else {
-            guard let resourceURL = resourceDirectory ?? Bundle.main.resourceURL else { throw AppFailure.backend }
+            guard let resource = resourceDirectory ?? Bundle.main.resourceURL else { throw AppFailure.backend }
+            let resourceURL = resource.resolvingSymlinksInPath()
             directory = resourceURL.appendingPathComponent("Backend")
-            struct Runtime: Decodable { let nodeExecutable: String }
+            struct Runtime: Decodable { let version: Int; let nodeExecutable: String }
             guard let data = try? Data(contentsOf: directory.appendingPathComponent("runtime.json")),
-                  let runtime = try? JSONDecoder().decode(Runtime.self, from: data) else { throw AppFailure.backend }
-            nodePath = runtime.nodeExecutable
+                  let runtime = try? JSONDecoder().decode(Runtime.self, from: data), runtime.version == 1,
+                  runtime.nodeExecutable == "../../Helpers/node" else { throw AppFailure.backend }
+            let helper = resourceURL.deletingLastPathComponent().appendingPathComponent("Helpers/node").standardizedFileURL
+            // A distributed app must never fall back to an external Node or an escaping symlink.
+            guard helper.resolvingSymlinksInPath().path == helper.path,
+                  directory.appendingPathComponent("worker.mjs").resolvingSymlinksInPath().path ==
+                    directory.appendingPathComponent("worker.mjs").standardizedFileURL.path else { throw AppFailure.backend }
+            nodePath = helper.path
         }
         let node = URL(fileURLWithPath: nodePath)
         let worker = directory.appendingPathComponent("worker.mjs")
