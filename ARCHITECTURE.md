@@ -83,8 +83,8 @@ UIはLMS固有のHTTPやカレンダー形式を知らない。既存のSwift IC
 
 ## ネイティブ保存と互換性
 
-- App/StateObjectの初期化ではKeychainへアクセスしない。SwiftUIのウィンドウ生成後に一度だけ認証情報をバックグラウンドで読み、複数ウィンドウの同時開始でも同じ読込Taskを共有する。
-- Keychain確認中も保存済み課題を表示する。認証拒否をエラーとして表示し、ウィンドウ登録時・認証確認後・Dock再オープン時に一覧を前面へ戻す。認証権限やKeychainのアクセス制御は変更しない。
+- App/StateObjectの初期化ではKeychainへアクセスしない。起動時は非対話読取だけをバックグラウンドで実行する。新しい実装にはLAContext.interactionNotAllowedを指定する。従来のfile-based実装はLAContext/UIクエリを無視するため、当アプリの全Keychain読書きをロックで直列化し、読取中だけプロセス内のSecKeychainの対話許可をOFFにしてdeferで元に戻す。ACLや他アプリの設定は変更しない。互換処理には非推奨APIのコンパイル警告が残る。
+- 保存済み課題は認証情報の読取前から表示する。認証権限やKeychainのアクセス制御は変更しない。定期同期は不変のメモリ上スナップショットを使い、Keychain APIを呼ばない。
 
 - Core Dataのエンティティ名・属性名・SQLite保存先・JSON保存形式は変更しない。
 - Keychainのservice/accountも変更しない。利用者の再登録は不要。
@@ -104,5 +104,17 @@ UIはLMS固有のHTTPやカレンダー形式を知らない。既存のSwift IC
 
 ## 後続フェーズ
 
-通知・MenuBarExtra・SMAppService・定期同期をネイティブアダプターから接続する。WebClassの未知の状態は不明として保持し、実運用で確認を続ける。Version 1の受入条件は引き続き未完了。
+通知・通知履歴と重複防止を追加する。WebClassの未知の状態は不明として保持し、実運用で確認を続ける。Version 1の受入条件は引き続き未完了。
+
+## 常駐・スケジューリング
+
+- Appが単一のHomeViewModelとSyncCoordinatorを保持する。ApplicationDelegateから一度だけサービスを開始する。WindowのTaskに同期ループを結び付けず、閉じた後もMenuBarExtraから操作する。
+- Swiftは単発Timer、NSWorkspaceの復帰/スリープ通知、NWPathMonitorをOSアダプターとして使用する。Timerは遅延の最大10%・上限30秒の猶予を許す。画面用の期限分類はアプリ所有の別タイマーで毎分再計算する。
+- TypeScriptのsyncPolicyコマンドが取得元別の実行予定、1/2/4…分のバックオフ、一時停止、手動再試行を決める。ネットワークや保存の副作用はない純粋関数。時刻注入でテストする。
+- 自動同期と手動同期の入口を同じCoordinatorへ統合する。実行前にガードを立て、実行中の追加手動要求だけを取得元ごとに集合へまとめて1回分予約する。画面別のタイマーは作らない。
+- 同期結果success/transient/attention/cancelledをTSへ戻す。failureCount/blocked/lastAttemptAtはUserDefaultsに永続化する。blockedは再起動でも維持し、明示同期成功で解除する。
+- 定期同期OFF中は予定タイマーを止める。スリープ中の未実行回数は再生しない。時計を戻した場合は前回試行時刻を1回だけ現在時刻へ補正して保存する。
+- 自動取得前に大学認証画面を自動表示しない。Moodleのセッションがない場合は不明データの定期再取込を繰り返さず認証停止とする。手動同期では既存のICSのみの取得も維持する。
+- SMAppService.mainAppは状態読取と明示的な設定操作にのみ使用する。登録・解除は起動時に実行しない。requiresApprovalと登録エラーをUIに表示する。デモではOSのログイン項目へアクセスしない。
+- OS再ログインでの自動起動・本番の長時間タイマー・実際のスリープ復帰は、模擬時刻のテストとは別に利用環境での確認が必要。
 

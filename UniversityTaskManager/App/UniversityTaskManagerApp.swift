@@ -7,46 +7,52 @@ struct UniversityTaskManagerApp: App {
     @StateObject private var viewModel: HomeViewModel
 
     init() {
+        let model: HomeViewModel
         if CommandLine.arguments.contains("--demo") {
-            _viewModel = StateObject(wrappedValue: HomeViewModel(repository: SampleTaskRepository(), isDemo: true))
+            model = HomeViewModel(repository: SampleTaskRepository(), isDemo: true)
         } else {
             // DBを開けない場合に空のDBを作り直さず、保存エラーを表示する。
-            _viewModel = StateObject(wrappedValue: HomeViewModel(repository: try? CoreDataTaskRepository()))
+            model = HomeViewModel(repository: try? CoreDataTaskRepository())
         }
+        _viewModel = StateObject(wrappedValue: model)
+        applicationDelegate.viewModel = model
     }
 
     var body: some Scene {
-        WindowGroup("課題", id: "main") {
+        Window("課題", id: "main") {
             HomeView(viewModel: viewModel)
                 .background(MainWindowRegistration())
-                .task {
-                    await viewModel.loadCredentials()
-                    guard !Task.isCancelled else { return }
-                    MainWindowPresenter.shared.show()
-                    await viewModel.syncAll()
-                }
+                .onAppear { viewModel.startServices() }
         }
         .defaultSize(width: 760, height: 680)
         .commands { MainWindowCommands() }
+        MenuBarExtra {
+            MenuBarTaskView(viewModel: viewModel, coordinator: viewModel.coordinator)
+        } label: {
+            Label("\(viewModel.visibleTaskCount)", systemImage: "books.vertical")
+                .accessibilityLabel("大学課題管理 未完了\(viewModel.visibleTaskCount)件")
+        }.menuBarExtraStyle(.window)
     }
 }
 
 @MainActor
 final class ApplicationDelegate: NSObject, NSApplicationDelegate {
+    var viewModel: HomeViewModel?
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Swift Packageから起動した場合もキーボード入力を受ける通常のMacアプリとして扱う。
         NSApplication.shared.setActivationPolicy(.regular)
         MainWindowPresenter.shared.show()
+        viewModel?.startServices()
     }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    func applicationWillTerminate(_ notification: Notification) { viewModel?.stopServices() }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         MainWindowPresenter.shared.show()
         return true
     }
 
-    func applicationDidBecomeActive(_ notification: Notification) {
-        if NSApplication.shared.keyWindow == nil { MainWindowPresenter.shared.show(activate: false) }
-    }
 }
 
 private struct MainWindowCommands: Commands {

@@ -1,7 +1,9 @@
 import Foundation
 import Security
+import LocalAuthentication
 
 protocol CalendarCredentialStore: Sendable {
+    func withoutAuthenticationUI() -> any CalendarCredentialStore
     func calendarURL() throws -> URL?
     func saveCalendarURL(_ text: String) throws
     func moodleSession(for calendarURL: URL) throws -> MoodleSession?
@@ -11,6 +13,7 @@ protocol CalendarCredentialStore: Sendable {
 }
 
 extension CalendarCredentialStore {
+    func withoutAuthenticationUI() -> any CalendarCredentialStore { self }
     func moodleSession(for calendarURL: URL) throws -> MoodleSession? { nil }
     func saveMoodleSession(_ session: MoodleSession, for calendarURL: URL) throws { throw AppFailure.keychain }
     func webClassSession() throws -> WebClassSession? { nil }
@@ -78,6 +81,44 @@ struct MoodleSession: Codable, Sendable {
 }
 
 struct KeychainService: CalendarCredentialStore {
+    private static let operationLock = NSRecursiveLock()
+    private let allowsAuthenticationUI: Bool
+    init(allowsAuthenticationUI: Bool = true) { self.allowsAuthenticationUI = allowsAuthenticationUI }
+    func withoutAuthenticationUI() -> any CalendarCredentialStore { Self(allowsAuthenticationUI: false) }
+
+    private func reading(_ query: [String: Any]) -> [String: Any] {
+        var query = query
+        if !allowsAuthenticationUI {
+            let context = LAContext()
+            context.interactionNotAllowed = true
+            query[kSecUseAuthenticationContext as String] = context
+        }
+        return query
+    }
+
+    private func copyItem(_ query: [String: Any], result: inout CFTypeRef?) throws -> OSStatus {
+        Self.operationLock.lock()
+        defer { Self.operationLock.unlock() }
+        if allowsAuthenticationUI { return SecItemCopyMatching(query as CFDictionary, &result) }
+        // The file-based SecItem implementation ignores the LAContext/UI query keys.
+        // Serialize ALL this app's reads/writes and temporarily disable optional UI only
+        // in this process, restoring the previous value before releasing the lock.
+        // This changes no Keychain ACL, saved credentials, or other application's policy.
+        var previous: DarwinBoolean = false
+        guard SecKeychainGetUserInteractionAllowed(&previous) == errSecSuccess else {
+            throw AppFailure.keychainAuthorizationRequired
+        }
+        defer { SecKeychainSetUserInteractionAllowed(previous.boolValue) }
+        guard SecKeychainSetUserInteractionAllowed(false) == errSecSuccess else { throw AppFailure.keychainAuthorizationRequired }
+        return SecItemCopyMatching(reading(query) as CFDictionary, &result)
+    }
+
+    private func checkReadStatus(_ status: OSStatus) throws {
+        if [errSecInteractionNotAllowed, errSecAuthFailed, errSecUserCanceled].contains(status) {
+            throw AppFailure.keychainAuthorizationRequired
+        }
+        guard status == errSecSuccess else { throw AppFailure.keychain }
+    }
     private let service = "jp.universitytaskmanager.moodle"
     private let account = "calendar-feed-url"
 
@@ -92,14 +133,17 @@ struct KeychainService: CalendarCredentialStore {
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        let status = try copyItem(query, result: &item)
         if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess, let data = item as? Data,
+        try checkReadStatus(status)
+        guard let data = item as? Data,
               let session = try? JSONDecoder().decode(WebClassSession.self, from: data) else { throw AppFailure.keychain }
         return session.isValid ? session : nil
     }
 
     func saveWebClassSession(_ session: WebClassSession) throws {
+        Self.operationLock.lock()
+        defer { Self.operationLock.unlock() }
         guard session.isValid else { throw AppFailure.webClassLoginRequired }
         let values: [String: Any] = [kSecValueData as String: try JSONEncoder().encode(session),
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
@@ -124,9 +168,10 @@ struct KeychainService: CalendarCredentialStore {
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        let status = try copyItem(query, result: &item)
         if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess, let data = item as? Data,
+        try checkReadStatus(status)
+        guard let data = item as? Data,
               let session = try? JSONDecoder().decode(MoodleSession.self, from: data) else { throw AppFailure.keychain }
         let base = Self.moodleRoot(for: calendarURL)
         guard session.baseURL == base, session.cookies.contains(where: { $0.matches(base) }) else { return nil }
@@ -134,6 +179,8 @@ struct KeychainService: CalendarCredentialStore {
     }
 
     func saveMoodleSession(_ session: MoodleSession, for calendarURL: URL) throws {
+        Self.operationLock.lock()
+        defer { Self.operationLock.unlock() }
         let base = Self.moodleRoot(for: calendarURL)
         guard session.baseURL == base, !session.cookies.isEmpty,
               session.cookies.allSatisfy({ $0.matches(base) }) else { throw AppFailure.moodleLoginRequired }
@@ -166,14 +213,17 @@ struct KeychainService: CalendarCredentialStore {
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var item: CFTypeRef?
-        let result = SecItemCopyMatching(query as CFDictionary, &item)
+        let result = try copyItem(query, result: &item)
         if result == errSecItemNotFound { return nil }
-        guard result == errSecSuccess, let data = item as? Data,
+        try checkReadStatus(result)
+        guard let data = item as? Data,
               let text = String(data: data, encoding: .utf8) else { throw AppFailure.keychain }
         return try Self.validatedURL(text)
     }
 
     func saveCalendarURL(_ text: String) throws {
+        Self.operationLock.lock()
+        defer { Self.operationLock.unlock() }
         let url = try Self.validatedURL(text)
         let attributes: [String: Any] = [
             kSecValueData as String: Data(url.absoluteString.utf8),

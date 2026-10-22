@@ -2,10 +2,8 @@ import SwiftUI
 
 struct HomeView: View {
     @ObservedObject var viewModel: HomeViewModel
-    @State private var showingSettings = false
     @State private var showingUnknown = false
     @Environment(\.scenePhase) private var scenePhase
-    private let clock = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
 
     var body: some View {
         NavigationStack {
@@ -29,7 +27,7 @@ struct HomeView: View {
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
                     Button {
-                        showingSettings = true
+                        viewModel.showingSettings = true
                     } label: {
                         Label("設定", systemImage: "gearshape")
                     }
@@ -40,13 +38,12 @@ struct HomeView: View {
                     } label: {
                         Label("今すぐ同期", systemImage: "arrow.clockwise")
                     }
-                    .disabled(viewModel.isSyncing || (!viewModel.isDemo && !viewModel.hasAnySource))
+                    .disabled(viewModel.isSyncing || viewModel.isLoadingCredentials)
                 }
             }
         }
         .frame(minWidth: 620, minHeight: 520)
-        .sheet(isPresented: $showingSettings) { SettingsView(viewModel: viewModel) }
-        .onReceive(clock) { _ in viewModel.reload() }
+        .sheet(isPresented: $viewModel.showingSettings) { SettingsView(viewModel: viewModel) }
         .onChange(of: scenePhase) { phase in if phase == .active { viewModel.reload() } }
     }
 
@@ -115,10 +112,10 @@ struct HomeView: View {
                 Text("WebClass：\(viewModel.statusText(for: .webClass))").font(.caption).foregroundStyle(.secondary)
             }
             if !viewModel.isDemo && !viewModel.isLoadingCredentials && (!viewModel.isWebClassConfigured || !viewModel.hasWebClassSession) {
-                Button("WebClassにログインして連携") { showingSettings = true }.font(.callout)
+                Button("WebClassにログインして連携") { viewModel.showingSettings = true }.font(.callout)
             }
             if !viewModel.isDemo && !viewModel.isLoadingCredentials && viewModel.isConfigured && !viewModel.hasMoodleSession {
-                Button("Moodleにログインして提出状況を確認") { showingSettings = true }
+                Button("Moodleにログインして提出状況を確認") { viewModel.showingSettings = true }
                     .font(.callout)
             }
             if !viewModel.unknownTasks.isEmpty {
@@ -149,7 +146,7 @@ struct HomeView: View {
             Text(viewModel.hasAnySource ? "同期すると、Moodle・WebClassの課題を締切順に表示します。" : "設定でMoodleまたはWebClassを連携すると、課題を取得できます。")
                 .foregroundStyle(.secondary)
             if !viewModel.hasAnySource {
-                Button("LMS連携を設定") { showingSettings = true }
+                Button("LMS連携を設定") { viewModel.showingSettings = true }
                     .buttonStyle(.borderedProminent)
                     .disabled(!viewModel.storageAvailable || viewModel.isDemo)
             }

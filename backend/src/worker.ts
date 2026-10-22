@@ -5,6 +5,7 @@ import { MoodleConnector } from "./connectors/moodle.js";
 import { WebClassConnector, decodeWebClassSession } from "./connectors/webclass.js";
 import { checkCompletions } from "./connectors/moodle-completion.js";
 import { decodeSession } from "./connectors/moodle-session.js";
+import { syncPolicy } from "./sync-policy.js";
 import { calendarURL, localTasks, record, remoteTasks, source, text, timestamp } from "./validation.js";
 
 const MAX_MESSAGE_BYTES = 32 * 1024 * 1024;
@@ -25,6 +26,7 @@ async function execute(value: unknown): Promise<unknown> {
     case "merge":
       return mergeTasks(localTasks(request.existing), remoteTasks(request.tasks), source(request.source), timestamp(request.now));
     case "health": return { protocolVersion: 1 };
+    case "syncPolicy": return syncPolicy(request);
     default: throw new BackendError("backend");
   }
 }

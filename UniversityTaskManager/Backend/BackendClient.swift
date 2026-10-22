@@ -33,6 +33,16 @@ struct BackendClient: Sendable {
         let source: TaskSource
         let now: Date
     }
+    private struct PolicyRequest: Encodable, Sendable {
+        let version = 1
+        let command = "syncPolicy"
+        let now: Date
+        let intervalSeconds: Int
+        let trigger: SyncTrigger
+        let states: [SyncPolicyState]
+        let enabled: [TaskSource]
+        let event: SyncPolicyEvent?
+    }
     private struct Envelope<Value: Decodable>: Decodable {
         struct Failure: Decodable { let code: String }
         let version: Int
@@ -61,6 +71,12 @@ struct BackendClient: Sendable {
 
     func merge(existing: [TaskItem], tasks: [RemoteTask], source: TaskSource, at date: Date) async throws -> MergeResult {
         try await request(MergeRequest(existing: existing, tasks: tasks, source: source, now: date))
+    }
+
+    func syncPolicy(states: [SyncPolicyState], enabled: [TaskSource], intervalSeconds: Int,
+                    trigger: SyncTrigger, event: SyncPolicyEvent? = nil, now: Date = .now) async throws -> SyncPolicyPlan {
+        try await request(PolicyRequest(now: now, intervalSeconds: intervalSeconds, trigger: trigger,
+                                      states: states, enabled: enabled, event: event))
     }
 
     private func request<Input: Encodable & Sendable, Output: Decodable & Sendable>(_ value: Input) async throws -> Output {

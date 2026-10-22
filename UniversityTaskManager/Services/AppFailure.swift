@@ -7,11 +7,13 @@ enum AppFailure: LocalizedError, Equatable, Sendable {
     case backend
     case moodleLoginRequired
     case webClassLoginRequired, invalidWebClassData
+    case keychainAuthorizationRequired
 
     var errorDescription: String? {
         switch self {
         case .invalidURL: "有効なHTTPSのMoodleカレンダーURLを入力してください。"
         case .keychain: "Keychainへアクセスできませんでした。MacのKeychainの状態を確認してください。"
+        case .keychainAuthorizationRequired: "保存済みログイン情報の使用許可が必要です。設定で「保存済み連携情報を読み込む」を押してください。"
         case .storage: "課題データを読み書きできませんでした。保存済みデータは削除していません。"
         case .invalidCalendar: "カレンダーデータを解析できませんでした。Moodleで取得したURLか確認してください。"
         case .unsupportedCalendar: "未対応の繰り返し予定・日時形式が含まれています。保存済みの課題は維持しています。"

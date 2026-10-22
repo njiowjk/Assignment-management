@@ -15,6 +15,7 @@ struct Phase2Checks {
         try await persistenceChecks()
         try await webClassChecks()
         try await startupChecks()
+        try await schedulingChecks()
         print("PASS: \(count) native/TypeScript integration checks")
     }
 
@@ -101,7 +102,7 @@ struct Phase2Checks {
             let credentials = SyntheticCredentials(webSession: session)
             let vm = HomeViewModel(repository: repository, credentials: credentials, connectorFactory: { source, _ in
                 SyntheticConnector(source: source, shouldFail: source == failedSource)
-            })
+            }, schedulingDefaults: nil)
             await vm.loadCredentials()
             try check(vm.hasAnySource && vm.hasWebClassSession && vm.isConfigured, "independent source configuration loaded")
             await vm.syncAll()
@@ -120,7 +121,7 @@ struct Phase2Checks {
         let repository = try CoreDataTaskRepository(inMemory: true)
         _ = try await repository.merge([remote(completed: false)], source: .moodle, at: now)
         let credentials = StartupCredentials()
-        let vm = HomeViewModel(repository: repository, credentials: credentials)
+        let vm = HomeViewModel(repository: repository, credentials: credentials, schedulingDefaults: nil)
         try check(credentials.readCount == 0, "constructing the app model never opens Keychain")
         try check(vm.visibleTaskCount == 1, "offline cache is visible before credential authentication")
         let first = Task { await vm.loadCredentials() }
@@ -139,12 +140,96 @@ struct Phase2Checks {
         await vm.loadCredentials()
         try check(credentials.readCount == 2, "reopening a window does not trigger startup Keychain reads again")
 
-        let denied = HomeViewModel(repository: repository, credentials: DeniedCredentials())
+        let denied = HomeViewModel(repository: repository, credentials: DeniedCredentials(), schedulingDefaults: nil)
         await denied.loadCredentials()
         try check(!denied.isLoadingCredentials && denied.errorMessage != nil, "denied Keychain access becomes a visible error, not a stuck launch")
         try check(denied.visibleTaskCount == 1, "denied authentication preserves visible offline cache")
         try check(denied.statusText(for: .moodle).contains("Keychain") && denied.statusText(for: .webClass).contains("Keychain"),
                   "each source reports credential access failure")
+    }
+
+    static func schedulingChecks() async throws {
+        var clock = now
+        var calls: [TaskSource] = []
+        var allAutomatic = true
+        let moodleOutcome: SyncOutcome = .attention
+        let coordinator = SyncCoordinator(defaults: nil, usesSystemEvents: false,
+            enabledSources: { [.moodle, .webClass] }, synchronize: { source, interactive in
+                calls.append(source)
+                allAutomatic = allAutomatic && !interactive
+                return source == .moodle ? moodleOutcome : .success
+            }, now: { clock })
+        try check(coordinator.intervalSeconds == 1800 && coordinator.automaticEnabled, "default is 30 minute automatic sync")
+        await coordinator.start()
+        try check(calls == [.moodle, .webClass], "startup checks both sources independently")
+        await coordinator.start()
+        await coordinator.request(.wake)
+        try check(calls.count == 2, "duplicate start and early wake do not duplicate sync")
+        clock = clock.addingTimeInterval(86400)
+        await coordinator.request(.wake)
+        try check(calls == [.moodle, .webClass, .webClass], "wake coalesces missed intervals and skips authentication-blocked source")
+        try check(allAutomatic, "automatic triggers never request interactive credentials")
+        try check(coordinator.states.first(where: { $0.source == .moodle })?.blocked == true, "source requiring login remains paused")
+        // A separately constructed coordinator tests explicit manual bypass without the auto-only assertion.
+        var manualCalls = 0
+        let manual = SyncCoordinator(defaults: nil, usesSystemEvents: false, enabledSources: { [.moodle] }, synchronize: { _, interactive in
+            if interactive { manualCalls += 1 }
+            return .success
+        }, now: { clock })
+        manual.setAutomaticEnabled(false)
+        await manual.request(.wake)
+        try check(manualCalls == 0 && manual.nextRunAt == nil, "automatic OFF suppresses wake sync")
+        await manual.request(.manual)
+        try check(manualCalls == 1 && manual.nextRunAt == nil, "manual sync works while automatic OFF")
+        coordinator.stop(); manual.stop()
+
+        let gate = AsyncSyncGate()
+        var active = 0, peak = 0, runs = 0
+        let serial = SyncCoordinator(defaults: nil, usesSystemEvents: false, enabledSources: { [.moodle] }, synchronize: { _, _ in
+            active += 1; peak = max(peak, active); runs += 1
+            if runs == 1 { await gate.wait() }
+            active -= 1
+            return .success
+        })
+        let first = Task { await serial.request(.manual) }
+        let deadline = Date().addingTimeInterval(3)
+        while !gate.waiting && Date() < deadline { try await Task.sleep(for: .milliseconds(2)) }
+        try check(gate.waiting && serial.isRunning, "long-running sync is guarded before awaiting network")
+        await serial.request(.wake)
+        await serial.request(.manual)
+        await serial.request(.manual)
+        gate.resume()
+        await first.value
+        while (runs < 2 || serial.isRunning) && Date() < deadline { try await Task.sleep(for: .milliseconds(2)) }
+        try check(runs == 2 && peak == 1, "overlapping manual requests coalesce into exactly one serial follow-up")
+        serial.stop()
+
+        let repository = try CoreDataTaskRepository(inMemory: true)
+        let probe = CredentialModeProbe()
+        var fetches = 0
+        let vm = HomeViewModel(repository: repository, credentials: CredentialModeStore(probe: probe), connectorFactory: { source, _ in
+            fetches += 1
+            return SyntheticConnector(source: source, shouldFail: false)
+        }, schedulingDefaults: nil)
+        await vm.loadCredentials()
+        try check(probe.quietReads == 3 && probe.interactiveReads == 0, "startup selects noninteractive Keychain adapter")
+        let reads = probe.quietReads
+        await vm.coordinator.request(.startup)
+        try check(fetches == 1 && probe.quietReads == reads && probe.interactiveReads == 0, "automatic sync reuses memory credentials without any Keychain calls")
+        await vm.syncAll()
+        try check(probe.interactiveReads == 3 && fetches == 2, "explicit manual sync alone can refresh interactive credentials")
+
+        let blockedProbe = CredentialModeProbe()
+        let blocked = HomeViewModel(repository: repository, credentials: CredentialModeStore(probe: blockedProbe, denyQuiet: true), connectorFactory: { source, _ in
+            SyntheticConnector(source: source, shouldFail: false)
+        }, schedulingDefaults: nil)
+        await blocked.loadCredentials()
+        try check(!blocked.isConfigured && blocked.statusText(for: .moodle).contains("使用許可"), "noninteractive access denial provides explicit authorization guidance")
+        await blocked.authorizeSavedCredentials()
+        try check(blocked.isConfigured && blockedProbe.interactiveReads == 3, "explicit authorization restores saved configuration without re-entering the calendar URL")
+        let demoLoginItem = LoginItemController(isDemo: true)
+        await demoLoginItem.setEnabled(true)
+        try check(!demoLoginItem.enabled, "demo mode cannot register a real login item")
     }
 
     static func bridgeChecks() async throws {
@@ -294,4 +379,38 @@ struct DeniedCredentials: CalendarCredentialStore {
     func calendarURL() throws -> URL? { throw AppFailure.keychain }
     func webClassSession() throws -> WebClassSession? { throw AppFailure.keychain }
     func saveCalendarURL(_ text: String) throws { throw AppFailure.keychain }
+}
+
+@MainActor
+final class AsyncSyncGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private(set) var waiting = false
+    func wait() async { await withCheckedContinuation { continuation = $0; waiting = true } }
+    func resume() { continuation?.resume(); continuation = nil }
+}
+
+final class CredentialModeProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var quiet = 0, interactive = 0
+    var quietReads: Int { lock.withLock { quiet } }
+    var interactiveReads: Int { lock.withLock { interactive } }
+    func record(quiet value: Bool) { lock.withLock { if value { quiet += 1 } else { interactive += 1 } } }
+}
+
+struct CredentialModeStore: CalendarCredentialStore {
+    let probe: CredentialModeProbe
+    var denyQuiet = false
+    var quiet = false
+    func withoutAuthenticationUI() -> any CalendarCredentialStore { Self(probe: probe, denyQuiet: denyQuiet, quiet: true) }
+    func calendarURL() throws -> URL? {
+        probe.record(quiet: quiet)
+        if denyQuiet && quiet { throw AppFailure.keychainAuthorizationRequired }
+        return URL(string: "https://example.test/calendar/feed?authtoken=synthetic")
+    }
+    func moodleSession(for calendarURL: URL) throws -> MoodleSession? {
+        probe.record(quiet: quiet)
+        return MoodleSession(baseURL: KeychainService.moodleRoot(for: calendarURL), cookies: [])
+    }
+    func webClassSession() throws -> WebClassSession? { probe.record(quiet: quiet); return nil }
+    func saveCalendarURL(_ text: String) throws {}
 }

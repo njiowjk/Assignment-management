@@ -4,6 +4,8 @@ build/
 DerivedData/
 *.xcuserstate
 xcuserdata/
+*.docx
+*.pdf
 
 # Never commit local credentials, exported sessions, or authentication traces.
 *.env
