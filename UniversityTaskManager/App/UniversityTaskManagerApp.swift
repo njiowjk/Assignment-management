@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UserNotifications
 
 @main
 struct UniversityTaskManagerApp: App {
@@ -36,11 +37,12 @@ struct UniversityTaskManagerApp: App {
 }
 
 @MainActor
-final class ApplicationDelegate: NSObject, NSApplicationDelegate {
+final class ApplicationDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     var viewModel: HomeViewModel?
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Swift Packageから起動した場合もキーボード入力を受ける通常のMacアプリとして扱う。
         NSApplication.shared.setActivationPolicy(.regular)
+        if viewModel?.isDemo == false { UNUserNotificationCenter.current().delegate = self }
         MainWindowPresenter.shared.show()
         viewModel?.startServices()
     }
@@ -51,6 +53,21 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         MainWindowPresenter.shared.show()
         return true
+    }
+
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+        notification.request.content.sound == nil ? [.banner, .list] : [.banner, .list, .sound]
+    }
+
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse) async {
+        guard response.actionIdentifier == UNNotificationDefaultActionIdentifier else { return }
+        let taskID = (response.notification.request.content.userInfo["taskID"] as? String).flatMap(UUID.init(uuidString:))
+        await MainActor.run {
+            self.viewModel?.openNotificationTask(taskID)
+            MainWindowPresenter.shared.show()
+        }
     }
 
 }

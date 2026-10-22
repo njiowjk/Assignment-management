@@ -16,12 +16,118 @@ struct Phase2Checks {
         try await webClassChecks()
         try await startupChecks()
         try await schedulingChecks()
+        try await notificationChecks()
         print("PASS: \(count) native/TypeScript integration checks")
     }
 
     static func check(_ value: Bool, _ label: String) throws {
         guard value else { throw CheckFailure(label: label) }
         count += 1
+    }
+
+    static func notificationChecks() async throws {
+        var clock = now
+        var tasks = [TaskItem(externalID: "notification-synthetic", source: .moodle, courseName: "授業", title: "課題",
+            deadline: now.addingTimeInterval(172800), completionIsKnown: true)]
+        let center = SyntheticNotificationCenter(now: { clock })
+        let controller = NotificationController(defaults: nil, center: center, snapshot: { (tasks, [.moodle]) }, now: { clock })
+        await controller.refresh()
+        try check(!controller.preferences.enabled && center.requests.isEmpty && center.permissionRequests == 0,
+                  "notifications default OFF; startup never requests notification permission")
+        await controller.setEnabled(true)
+        try check(center.permissionRequests == 1 && controller.authorization == .authorized, "explicit ON requests OS permission once")
+        try check(center.requests.count == 3 && controller.scheduledCount == 3, "initial cache reserves only three future reminders")
+        let initialIDs = Set(center.requests.keys), initialAdds = center.adds.count
+        await controller.refresh()
+        try check(center.adds.count == initialAdds, "identical reconciliation never replaces existing OS requests")
+        let newTask = TaskItem(externalID: "notification-new", source: .moodle, courseName: "授業", title: "新規",
+            deadline: now.addingTimeInterval(259200), completionIsKnown: true)
+        tasks.append(newTask)
+        await controller.refresh()
+        try check(center.delivered.contains(where: { $0.hasSuffix(".newTask") }), "new task generates immediate alert after baseline")
+        let alertCount = center.adds.filter { $0.hasSuffix(".newTask") }.count
+        await controller.refresh()
+        try check(center.adds.filter { $0.hasSuffix(".newTask") }.count == alertCount, "repeated sync never replays immediate alert")
+        let persisted = try JSONDecoder().decode(NotificationState.self, from: JSONEncoder().encode(controller.state))
+        let restored = NotificationController(defaults: nil, center: center, snapshot: { (tasks, [.moodle]) },
+            restoredPreferences: controller.preferences, restoredState: persisted, now: { clock })
+        await restored.refresh()
+        try check(center.adds.filter { $0.hasSuffix(".newTask") }.count == alertCount, "receipt journal roundtrips across controller restart")
+        tasks[0].deadline = now.addingTimeInterval(345600)
+        await restored.refresh()
+        try check(initialIDs.isDisjoint(with: Set(center.requests.keys)), "deadline change removes old OS reservations")
+        try check(center.delivered.contains(where: { $0.hasSuffix(".deadlineChanged") }), "deadline change posts one immediate alert")
+        tasks[0].status = .completed
+        tasks[1].completionIsKnown = false
+        await restored.refresh()
+        try check(center.requests.isEmpty && center.delivered.isEmpty, "completed and unknown cancel both pending and delivered notifications")
+        tasks[0].status = .active
+        tasks[1].completionIsKnown = true
+        await restored.refresh()
+        await restored.setOption(\.dayBefore, false)
+        try check(center.requests.keys.allSatisfy { !$0.hasSuffix(".dayBefore") }, "per-type OFF cancels only that type")
+        await restored.sendTest()
+        try check(center.requests["assignment.test"] != nil && restored.testMessage?.contains("3秒") == true, "test notification is user-triggered and uses no private task data")
+        center.requests["unrelated"] = PendingTaskNotification(id: "unrelated", title: "other", body: "other", fireAt: clock.addingTimeInterval(10), sound: false)
+        await restored.setEnabled(false)
+        try check(Set(center.requests.keys) == ["unrelated"] && center.delivered.isEmpty, "master OFF cancels task/test requests but preserves unrelated notifications")
+
+        let failedCenter = SyntheticNotificationCenter(now: { clock })
+        failedCenter.status = .authorized
+        var enabled = NotificationPreferences(); enabled.enabled = true
+        let failure = NotificationController(defaults: nil, center: failedCenter, snapshot: { (tasks, [.moodle]) }, restoredPreferences: enabled, now: { clock })
+        await failure.refresh()
+        tasks.append(TaskItem(externalID: "retry", source: .moodle, courseName: "授業", title: "再試行",
+            deadline: clock.addingTimeInterval(180000), completionIsKnown: true))
+        failedCenter.failAdds = true
+        await failure.refresh()
+        try check(failure.errorMessage != nil && failure.state.events.count == 1, "failed OS add retains immediate outbox with visible error")
+        failedCenter.failAdds = false
+        await failure.refresh()
+        try check(failure.errorMessage == nil && failure.state.events.isEmpty, "successful retry drains outbox without losing the event")
+        let accepted = failedCenter.adds.count
+        clock = clock.addingTimeInterval(400000)
+        failedCenter.requests = [:]; failedCenter.delivered = []
+        await failure.refresh()
+        try check(failedCenter.adds.count == accepted, "restart after deadlines never replays already accepted reminders")
+
+        let deniedCenter = SyntheticNotificationCenter(now: { clock }); deniedCenter.status = .denied
+        let denied = NotificationController(defaults: nil, center: deniedCenter, snapshot: { throw AppFailure.storage })
+        await denied.setEnabled(true)
+        try check(denied.authorization == .denied && deniedCenter.permissionRequests == 0 && deniedCenter.adds.isEmpty,
+                  "denied permission does not prompt again or post notifications")
+        let offlineCenter = SyntheticNotificationCenter(now: { clock }); offlineCenter.status = .authorized
+        offlineCenter.requests["assignment.v1.synthetic"] = .init(id: "assignment.v1.synthetic", title: "", body: "", fireAt: clock, sound: false)
+        let noBackend = NotificationController(defaults: nil, center: offlineCenter,
+            backend: BackendClient(resourceDirectory: URL(fileURLWithPath: "/nonexistent-synthetic-backend")),
+            snapshot: { (tasks, [.moodle]) }, restoredPreferences: enabled)
+        await noBackend.refresh()
+        try check(offlineCenter.requests.count == 1 && noBackend.errorMessage != nil, "failed backend preserves existing OS reservations and reports error")
+        await noBackend.setEnabled(false)
+        try check(offlineCenter.requests.isEmpty, "OFF still cancels OS requests if both storage and backend are unavailable")
+
+        let unacknowledged = persisted.events + [.init(id: "assignment.v1.\(newTask.id.uuidString.lowercased()).\(Int(newTask.deadline.timeIntervalSince1970 * 1000)).0.newTask",
+            taskID: newTask.id.uuidString.lowercased(), kind: "newTask", fireAt: now)]
+        var crashState = persisted; crashState.events = unacknowledged; crashState.receipts = []
+        let crashCenter = SyntheticNotificationCenter(now: { now }); crashCenter.status = .authorized
+        crashCenter.delivered = Set(unacknowledged.map(\.id))
+        let recovering = NotificationController(defaults: nil, center: crashCenter, snapshot: { ([newTask], [.moodle]) },
+            restoredPreferences: enabled, restoredState: crashState, now: { now })
+        await recovering.refresh()
+        try check(crashCenter.adds.allSatisfy { !$0.hasSuffix(".newTask") }, "OS-delivered ID prevents replay if an earlier registration receipt was not saved")
+
+        let gate = AsyncSyncGate(), racingCenter = SyntheticNotificationCenter(now: { clock })
+        racingCenter.status = .authorized; racingCenter.addGate = gate
+        let racing = NotificationController(defaults: nil, center: racingCenter,
+            snapshot: { ([TaskItem(externalID: "race", source: .moodle, courseName: "授業", title: "競合",
+                deadline: clock.addingTimeInterval(172800), completionIsKnown: true)], [.moodle]) }, restoredPreferences: enabled, now: { clock })
+        let refreshing = Task { await racing.refresh() }
+        let waitUntil = Date().addingTimeInterval(3)
+        while !gate.waiting && Date() < waitUntil { try await Task.sleep(for: .milliseconds(2)) }
+        try check(gate.waiting, "notification reconciliation awaits OS add without blocking UI")
+        await racing.setEnabled(false)
+        racingCenter.addGate = nil; gate.resume(); await refreshing.value
+        try check(racingCenter.requests.isEmpty && racingCenter.delivered.isEmpty, "OFF during an in-flight add cannot reintroduce cancelled notifications")
     }
 
     static func iso(_ text: String) -> Date { ISO8601DateFormatter().date(from: text)! }
@@ -327,6 +433,32 @@ struct Phase2Checks {
 }
 
 struct CheckFailure: Error { let label: String }
+
+@MainActor
+final class SyntheticNotificationCenter: TaskNotificationCenter {
+    var status: NotificationAuthorization = .notDetermined
+    var permissionRequests = 0
+    var requests: [String: PendingTaskNotification] = [:]
+    var delivered: Set<String> = []
+    var adds: [String] = []
+    var failAdds = false
+    var addGate: AsyncSyncGate?
+    let now: () -> Date
+    init(now: @escaping () -> Date) { self.now = now }
+    func authorization() async -> NotificationAuthorization { status }
+    func requestAuthorization() async throws -> Bool { permissionRequests += 1; status = .authorized; return true }
+    func pending() async -> [PendingTaskNotification] { Array(requests.values) }
+    func deliveredIDs() async -> [String] { Array(delivered) }
+    func add(_ request: PendingTaskNotification, taskID: UUID?) async throws {
+        if let addGate { await addGate.wait() }
+        if failAdds { throw AppFailure.storage }
+        adds.append(request.id)
+        if request.fireAt <= now() { delivered.insert(request.id) }
+        else { requests[request.id] = request }
+    }
+    func removePending(_ ids: [String]) { for id in ids { requests.removeValue(forKey: id) } }
+    func removeDelivered(_ ids: [String]) { for id in ids { delivered.remove(id) } }
+}
 
 struct FailingConnector: TaskSourceConnector {
     let source: TaskSource = .moodle

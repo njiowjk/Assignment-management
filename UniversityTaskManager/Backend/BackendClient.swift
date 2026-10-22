@@ -50,6 +50,15 @@ struct BackendClient: Sendable {
         let result: Value?
         let error: Failure?
     }
+    private struct NotificationRequest: Encodable, Sendable {
+        let version = 1
+        let command = "notificationPlan"
+        let tasks: [TaskItem]
+        let syncedSources: [TaskSource]
+        let preferences: NotificationPreferences
+        let state: NotificationState
+        let now: Date
+    }
 
     struct MergeResult: Codable, Sendable {
         let tasks: [TaskItem]
@@ -77,6 +86,11 @@ struct BackendClient: Sendable {
                     trigger: SyncTrigger, event: SyncPolicyEvent? = nil, now: Date = .now) async throws -> SyncPolicyPlan {
         try await request(PolicyRequest(now: now, intervalSeconds: intervalSeconds, trigger: trigger,
                                       states: states, enabled: enabled, event: event))
+    }
+
+    func notificationPlan(tasks: [TaskItem], syncedSources: [TaskSource], preferences: NotificationPreferences,
+                          state: NotificationState, now: Date = .now) async throws -> NotificationPlan {
+        try await request(NotificationRequest(tasks: tasks, syncedSources: syncedSources, preferences: preferences, state: state, now: now))
     }
 
     private func request<Input: Encodable & Sendable, Output: Decodable & Sendable>(_ value: Input) async throws -> Output {

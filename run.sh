@@ -62,6 +62,13 @@ cp "$PROJECT_DIR/AppBundle/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 cp "$APP_BINARY_DIR/UniversityTaskManager" "$APP_BUNDLE/Contents/MacOS/UniversityTaskManager.next"
 mv -f "$APP_BUNDLE/Contents/MacOS/UniversityTaskManager.next" "$APP_BUNDLE/Contents/MacOS/UniversityTaskManager"
 "$PROJECT_DIR/backend/build.sh" "$APP_BUNDLE/Contents/Resources"
+# UserNotifications identifies a real signed bundle, not SwiftPM's loose executable.
+# Local ad-hoc signing needs no certificate and grants no extra system permissions.
+# Finder/iCloud can attach FinderInfo to this generated .app directory, which codesign rejects.
+# Remove only that display metadata; retain provenance/quarantine and all source-file attributes.
+xattr -d com.apple.FinderInfo "$APP_BUNDLE" 2>/dev/null || true
+codesign --force --sign - --identifier jp.example.UniversityTaskManager "$APP_BUNDLE"
+codesign --verify --strict "$APP_BUNDLE"
 if [[ "$BUILD_ONLY" == 1 ]]; then
     print "アプリのビルドが完了しました: $APP_BUNDLE"
     exit 0

@@ -20,6 +20,7 @@ final class HomeViewModel: ObservableObject {
     @Published private(set) var webClassSyncError: String?
     @Published private(set) var isLoadingCredentials: Bool
     @Published var showingSettings = false
+    @Published var notificationTask: TaskItem?
 
     let isDemo: Bool
     let storageAvailable: Bool
@@ -32,6 +33,15 @@ final class HomeViewModel: ObservableObject {
     private var cachedCredentials = CredentialSnapshot()
     private var serviceTask: Task<Void, Never>?
     private let schedulingDefaults: UserDefaults?
+    private var notificationsStarted = false
+    lazy var notifications = NotificationController(defaults: schedulingDefaults,
+        center: isDemo || schedulingDefaults == nil ? DisabledTaskNotificationCenter() : MacTaskNotificationCenter(),
+        snapshot: { [weak self] in
+            guard let repository = self?.repository else { throw AppFailure.storage }
+            let tasks = try repository.fetchTasks()
+            let sources = try TaskSource.allCases.filter { try repository.lastSyncedAt(for: $0) != nil }
+            return (tasks, sources)
+        })
     lazy var coordinator = SyncCoordinator(defaults: schedulingDefaults, usesSystemEvents: !isDemo,
         enabledSources: { [weak self] in self?.configuredSources ?? [] },
         synchronize: { [weak self] source, interactive in
@@ -96,12 +106,20 @@ final class HomeViewModel: ObservableObject {
         guard serviceTask == nil, !isDemo else { return }
         serviceTask = Task { [weak self] in
             guard let self else { return }
+            self.notificationsStarted = true
+            await self.notifications.refresh()
             await self.loadCredentials()
             await self.coordinator.start()
         }
     }
 
-    func stopServices() { serviceTask?.cancel(); serviceTask = nil; coordinator.stop() }
+    func stopServices() { serviceTask?.cancel(); serviceTask = nil; notificationsStarted = false; coordinator.stop() }
+
+    func openNotificationTask(_ id: UUID?) {
+        showingSettings = false
+        guard let id, let tasks = try? repository?.fetchTasks() else { return }
+        notificationTask = tasks.first { $0.id == id }
+    }
 
     private var configuredSources: [TaskSource] {
         TaskSource.allCases.filter { $0 == .moodle ? isConfigured : isWebClassConfigured }
@@ -142,6 +160,7 @@ final class HomeViewModel: ObservableObject {
             lastMoodleUpdatedAt = try repository.lastSyncedAt(for: .moodle)
             lastWebClassUpdatedAt = try repository.lastSyncedAt(for: .webClass)
             lastUpdatedAt = [lastMoodleUpdatedAt, lastWebClassUpdatedAt].compactMap { $0 }.max()
+            if notificationsStarted { Task { await notifications.refresh() } }
         } catch { errorMessage = AppFailure.message(for: error) }
     }
 

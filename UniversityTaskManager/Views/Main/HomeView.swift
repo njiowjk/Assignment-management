@@ -44,6 +44,14 @@ struct HomeView: View {
         }
         .frame(minWidth: 620, minHeight: 520)
         .sheet(isPresented: $viewModel.showingSettings) { SettingsView(viewModel: viewModel) }
+        .sheet(item: $viewModel.notificationTask) { task in
+            NavigationStack {
+                TaskDetailView(task: task, bucket: DeadlineClassifier().bucket(for: task.deadline, relativeTo: .now))
+                    .toolbar {
+                        Button("閉じる") { viewModel.notificationTask = nil }.keyboardShortcut(.cancelAction)
+                    }
+            }
+        }
         .onChange(of: scenePhase) { phase in if phase == .active { viewModel.reload() } }
     }
 

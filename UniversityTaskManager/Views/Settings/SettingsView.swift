@@ -16,6 +16,8 @@ struct SettingsView: View {
            VStack(alignment: .leading, spacing: 18) {
             AutomaticSyncSettings(viewModel: viewModel, coordinator: viewModel.coordinator, loginItem: viewModel.loginItem)
             Divider()
+            NotificationSettings(controller: viewModel.notifications, isDemo: viewModel.isDemo)
+            Divider()
             Text("Moodle連携").font(.title2.bold())
             Label(viewModel.isConfigured ? "カレンダーURL登録済み" : "未設定",
                   systemImage: viewModel.isConfigured ? "checkmark.shield" : "link")
