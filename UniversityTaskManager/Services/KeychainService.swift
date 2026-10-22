@@ -4,11 +4,93 @@ import Security
 protocol CalendarCredentialStore: Sendable {
     func calendarURL() throws -> URL?
     func saveCalendarURL(_ text: String) throws
+    func moodleSession(for calendarURL: URL) throws -> MoodleSession?
+    func saveMoodleSession(_ session: MoodleSession, for calendarURL: URL) throws
+}
+
+extension CalendarCredentialStore {
+    func moodleSession(for calendarURL: URL) throws -> MoodleSession? { nil }
+    func saveMoodleSession(_ session: MoodleSession, for calendarURL: URL) throws { throw AppFailure.keychain }
+}
+
+struct MoodleSession: Codable, Sendable {
+    let baseURL: URL
+    let cookies: [Cookie]
+
+    struct Cookie: Codable, Sendable {
+        let name: String
+        let value: String
+        let domain: String
+        let path: String
+        let secure: Bool
+        let httpOnly: Bool
+        let expiresAt: Date?
+
+        init(_ cookie: HTTPCookie) {
+            name = cookie.name; value = cookie.value; domain = cookie.domain; path = cookie.path
+            secure = cookie.isSecure; httpOnly = cookie.isHTTPOnly; expiresAt = cookie.expiresDate
+        }
+
+        func matches(_ url: URL) -> Bool {
+            guard let host = url.host?.lowercased(), expiresAt == nil || expiresAt! > .now else { return false }
+            let domain = domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            return host == domain || host.hasSuffix("." + domain)
+        }
+
+        var nativeCookie: HTTPCookie? {
+            var properties: [HTTPCookiePropertyKey: Any] = [
+                .name: name, .value: value, .domain: domain, .path: path,
+                .secure: secure ? "TRUE" : "FALSE"
+            ]
+            if httpOnly { properties[HTTPCookiePropertyKey(rawValue: "HttpOnly")] = "TRUE" }
+            if let expiresAt { properties[.expires] = expiresAt }
+            return HTTPCookie(properties: properties)
+        }
+    }
 }
 
 struct KeychainService: CalendarCredentialStore {
     private let service = "jp.universitytaskmanager.moodle"
     private let account = "calendar-feed-url"
+
+    static func moodleRoot(for calendarURL: URL) -> URL {
+        var parts = URLComponents(url: calendarURL, resolvingAgainstBaseURL: false)!
+        let path = parts.path
+        parts.query = nil; parts.fragment = nil
+        if let range = path.range(of: "/calendar/") { parts.path = String(path[..<range.lowerBound]) + "/" }
+        else { parts.path = "/" }
+        return parts.url!
+    }
+
+    func moodleSession(for calendarURL: URL) throws -> MoodleSession? {
+        var query = baseQuery
+        query[kSecAttrAccount as String] = "moodle-session"
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess, let data = item as? Data,
+              let session = try? JSONDecoder().decode(MoodleSession.self, from: data) else { throw AppFailure.keychain }
+        let base = Self.moodleRoot(for: calendarURL)
+        guard session.baseURL == base, session.cookies.contains(where: { $0.matches(base) }) else { return nil }
+        return session
+    }
+
+    func saveMoodleSession(_ session: MoodleSession, for calendarURL: URL) throws {
+        let base = Self.moodleRoot(for: calendarURL)
+        guard session.baseURL == base, !session.cookies.isEmpty,
+              session.cookies.allSatisfy({ $0.matches(base) }) else { throw AppFailure.moodleLoginRequired }
+        let data = try JSONEncoder().encode(session)
+        var query = baseQuery
+        query[kSecAttrAccount as String] = "moodle-session"
+        let values: [String: Any] = [kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
+        let status = SecItemUpdate(query as CFDictionary, values as CFDictionary)
+        if status == errSecItemNotFound {
+            guard SecItemAdd(query.merging(values) { _, new in new } as CFDictionary, nil) == errSecSuccess else { throw AppFailure.keychain }
+        } else if status != errSecSuccess { throw AppFailure.keychain }
+    }
 
     static func validatedURL(_ text: String) throws -> URL {
         let value = text.trimmingCharacters(in: .whitespacesAndNewlines)

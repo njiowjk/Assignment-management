@@ -18,4 +18,7 @@ credentials.json
 *.sqlite-shm
 *.sqlite-wal
 *.ics
+node_modules/
+backend/dist/
+backend/.test-build/
 

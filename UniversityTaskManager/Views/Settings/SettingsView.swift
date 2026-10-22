@@ -7,6 +7,7 @@ struct SettingsView: View {
     @State private var calendarURL = ""
     @State private var pasteMessage: String?
     @FocusState private var isURLFocused: Bool
+    @State private var showingLogin = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -42,8 +43,14 @@ struct SettingsView: View {
             }
             Text("URLはKeychainに保存されます。登録済みURLは画面に再表示しません。")
                 .font(.caption).foregroundStyle(.secondary)
-            Text("カレンダーの取得範囲外になった課題も保存します。提出済みかどうかは、現在はMoodle側で確認してください。")
-                .font(.callout).foregroundStyle(.secondary)
+            Divider()
+            Label(viewModel.hasMoodleSession ? "提出状況の自動確認：連携済み" : "提出状況の自動確認：ログインが必要です",
+                  systemImage: viewModel.hasMoodleSession ? "checkmark.shield" : "person.crop.circle.badge.exclamationmark")
+                .font(.callout)
+            Button(viewModel.hasMoodleSession ? "Moodleに再ログイン" : "Moodleにログイン") { showingLogin = true }
+                .disabled(viewModel.loginBaseURL == nil || viewModel.isDemo || viewModel.isSyncing)
+            Text("初回のみ公式画面でログインしてください。以後の同期で提出済みを自動的に除外します。セッションが切れた場合は再ログインが必要です。")
+                .font(.caption).foregroundStyle(.secondary)
             if let error = viewModel.errorMessage {
                 Text(error).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
             } else if let message = viewModel.syncMessage {
@@ -68,5 +75,12 @@ struct SettingsView: View {
         .frame(width: 510)
         .task { isURLFocused = true }
         .onDisappear { calendarURL = "" }
+        .sheet(isPresented: $showingLogin) {
+            if let baseURL = viewModel.loginBaseURL {
+                MoodleLoginView(baseURL: baseURL, previousSession: viewModel.currentMoodleSession()) { session in
+                    await viewModel.connectMoodleSession(session)
+                }
+            }
+        }
     }
 }

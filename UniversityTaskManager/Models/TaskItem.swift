@@ -29,7 +29,8 @@ struct TaskItem: Identifiable, Codable, Hashable, Sendable {
         firstDetectedAt: Date = .now,
         lastSyncedAt: Date = .now,
         completedAt: Date? = nil,
-        isRemovedFromSource: Bool = false
+        isRemovedFromSource: Bool = false,
+        completionIsKnown: Bool = false
     ) {
         self.id = id
         self.externalID = externalID
@@ -44,10 +45,11 @@ struct TaskItem: Identifiable, Codable, Hashable, Sendable {
         self.lastSyncedAt = lastSyncedAt
         self.completedAt = completedAt
         self.isRemovedFromSource = isRemovedFromSource
+        self.completionIsKnown = completionIsKnown
     }
 
     var isVisibleOnHome: Bool {
-        status != .completed
+        status != .completed && completionIsKnown
     }
 }
 

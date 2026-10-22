@@ -1,63 +1,90 @@
 # Architecture
 
+## 言語の責務
+
+バックエンドの処理はTypeScript、ネイティブUIとmacOS APIのアダプターはSwiftで実装する。
+
+| TypeScript | Swift |
+| --- | --- |
+| Moodle HTTPS取得・ICS解析 | SwiftUIの画面・入力・表示上の分類 |
+| LMS共通モデルと正規化 | Keychainの保存・読取 |
+| UIDによる差分更新・締切変更検出 | Core Dataの読み書きとトランザクション |
+| 完了状態・取得不能/消失の取扱い | Node子プロセスの起動・キャンセル |
+| WebClassの将来の通信・解析 | 将来のWKWebView・通知・ログイン項目 |
+
 ## データフロー
 
 ```text
-MoodleConnector ─┐
-                 ├─ RemoteTask ─ SyncService ─ TaskRepository ─ ViewModel ─ SwiftUI
-WebClassConnector┘
+SwiftUI → ViewModel → Swiftの薄いConnector → BackendClient
+                                              ↓ stdin / stdout JSON
+                                      TypeScript worker
+                                      ├─ MoodleConnector → ICSParser
+                                      ├─ WebClassConnector（未設定）
+                                      └─ mergeTasks（更新ルール）
+                                              ↓
+                              CoreDataTaskRepository（保存のみ）
 ```
 
-LMS固有の認証、HTML、CSV、ICSはConnector配下へ閉じ込めます。UIと永続化は正規化後のデータだけを扱います。
+UIはLMS固有のHTTPやカレンダー形式を知らない。既存のSwift ICSParserと差分更新ルールは削除し、二重実装しない。Swiftの期限分類は画面表示用であり、バックエンドの保存状態を変更しない。
 
-## Phase 1
+## TypeScriptバックエンド
 
-- SwiftUIのmacOSアプリ骨格
-- Taskのドメインモデル
-- LMS共通Connectorインターフェース
-- Repository境界とダミー実装
-- 期限切れ/今日/明日/今週/それ以降の分類
-- 未完了フィルタと締切順ソート
-- 一覧と詳細画面
-- 分類ロジックのユニットテスト
+- Node.js 22以降。strict TypeScriptで型チェックする。
+- `src/connectors/` にLMS固有処理を分離する。
+- ICSはUTF-8デコード前にアンフォールドし、UID・タイトル・日時を検証する。
+- UTC・IANA TZID・浮動日時・終日を扱う。日時はTemporalで検証する。未対応の繰り返し・未知のタイムゾーンは同期失敗にする。
+- DTEND優先、なければDTSTART。終日のDTENDは排他的。提出状態はICSから推測せず、ログイン済みセッションで別途取得する。
+- `mergeTasks` は副作用のない関数。対象Sourceの課題のみを返す。UUID・初回検出日時を保持し、消失はフラグだけで記録する。
+- `isCompleted == null` は不明。確認済みの完了を上書きしない。
+- WebClassは実通信を確認するまで未設定エラーを返す。
+- HTTPは60秒・8MiB上限、HTTPS同一オリジンのリダイレクトのみ許可する。
 
-「今週」はユーザーの現在のCalendarにおける週末までと定義します。今日と明日は先に独立グループへ分類します。
+## Moodleの自動完了判定
 
-## Phase 2（実装済み・実URLでの確認待ち）
+- macOSのWKWebViewで、カレンダーURLのオリジンにある公式ログイン画面を開く。初回ログインは利用者が行う。
+- WKWebViewはnonPersistent。パスワード入力欄へアクセスせず、M.cfgのログイン状態だけを検証する。
+- 連携操作で対象Moodleに一致するCookieをKeychainへ保存する。CookieとCSRFキーをログへ渡さない。
+- TypeScriptのSessionClientはmy/でログイン状態を確認し、M.cfgのJSONを解析する。JavaScriptコードは実行しない。
+- core_calendar_get_calendar_event_by_idでUIDから教材のcourse module IDを解決し、提出ページの正規リンクを付ける。
+- core_get_stringsで提出・受験状態の翻訳を取得する。生の例外やHTMLはログに出さない。
+- 課題はsubmissionstatustableのsubmitted/draft/reopenedと、Moodle自身の未提出文言から判定する。成績を提出状態の代わりにしない。
+- 小テストはquizattemptsummaryの受験状態を読む。進行中/期限超過があれば完了済み受験より優先して残す。
+- その他の教材はcore_course_get_moduleのコース一覧フラグメントから自動完了条件を読む。教材を開いて閲覧完了を発生させない。
+- セッションを送る通信は同一オリジン・対象サイトパス・Cookieパス・有効期限を検証する。リダイレクト先へ無条件にCookieを送らない。
+- 保存済みで今回のICSにない課題もチェック対象にし、isRemovedFromSourceを保持する。期間外になったことから提出完了を推測しない。
+- 未確認の課題を通常の未完了一覧へ混ぜず、折りたたみの別枠へ残す。確認済み完了の情報は保存し、ホームから除外する。
+- 大学の公開ログインページは実通信で確認済み。ログイン後の大学固有の表示は、利用者が連携してから検証する。非対応時は不明として保持する。
 
-- 永続化はCore Data。プログラムでモデルを定義し、ターミナルからビルド可能なmacOS 13対応を維持する。
-- RepositoryはMainActorで読み書きする。課題スナップショットとSourceごとの最終正常同期日時を、同じトランザクションで保存する。
-- 保存失敗時にはrollbackし、DB破損時に空のDBへ自動置換しない。
-- URLはKeychainのgeneric passwordに保存。画面へ再表示せず、生の通信エラーをユーザーへ渡さない。
-- Connectorはephemeral URLSessionを使い、HTTP・別オリジンへのリダイレクトを拒否する。
-- ICSはUTF-8のデコード前にアンフォールド。UID・SUMMARY・日時を検証し、未対応の繰り返し形式は全体の同期失敗にする。
-- DTEND優先、なければDTSTART。終日のDTENDは排他的。CATEGORIESから授業名を取得し、なければ未取得を明示する。
-- UIDの一致で更新し、ローカルUUIDと初回検出日時を維持する。消失は `isRemovedFromSource` に記録し課題を残す。
-- `RemoteTask.isCompleted == nil` は提出情報不明。確認済みの完了を上書きしない。
-- UIは起動時・手動同期、設定、最終正常同期、同期エラーを表示する。ローカルでの期限分類は毎分再計算する。
-- テストは `./test.sh` で実コードをコンパイルし、模擬HTTPと一時DBを使う。ユーザーのKeychainや本番DBにはアクセスしない。
+## プロセス間通信
+
+- リクエストごとにNodeを起動し、1つのJSONをstdinへ書き、EOFを送る。
+- stdoutは `{ version: 1, ok: true, result }` または `{ version: 1, ok: false, error: { code } }` だけを返す。
+- Wireの日付はUnix epochからのミリ秒。DBでは既存のJSONEncoder形式を維持する。
+- 入口でJSONの型・日付・UUID・Sourceを検証する。メッセージは32MiBまで。
+- URLはstdinだけで渡す。引数、環境変数、通常設定、DB、ログにカレンダーURLを保存しない。
+- エラーは固定コードのみ返し、元の例外・レスポンス本文・URLを出力しない。Swiftは固定の日本語表示へ変換する。
+- Swiftは子をメインスレッド外で待ち、キャンセルまたは90秒タイムアウトで終了させる。
+- 外部向けの待受ポートやクラウドサーバーは使わない。
+
+## ネイティブ保存と互換性
+
+- Core Dataのエンティティ名・属性名・SQLite保存先・JSON保存形式は変更しない。
+- Keychainのservice/accountも変更しない。利用者の再登録は不要。
+- Swift Repositoryは既存課題をTypeScriptに渡し、返った対象Sourceのスナップショットを保存する。
+- 同期時刻と課題を同時にsaveし、保存失敗時はrollbackする。
+- バックエンドが失敗した場合は書込みに進まない。
+- 取得・更新中でも前回保存した一覧を閲覧できる。DBが開けないときに空DBへ自動置換しない。
+
+## ビルドとテスト
+
+- `backend/build.sh` は依存がなければnpm ciし、型チェックと単一workerへのバンドルを実施する。
+- `run.sh` はSwiftをビルドし、workerとNodeの実行パスをapp Resourcesへ配置する。
+- このMacにインストールされたNodeを使う。独立配布用のNode本体同梱は後続作業。
+- Xcodeにも同じビルドスクリプトを呼ぶフェーズを設定する。
+- `./test.sh` でTypeScriptの単体テストと、Swift→Node→Core Dataの結合テストを行う。
+- 実際の大学アカウント、Keychain、本番DBにはテストからアクセスしない。
 
 ## 後続フェーズ
 
-Moodleの実フィード確認、取得期間・予定種別の確認、自動提出判定の調査は未完了。Phase 2の実運用確認が済んでから次へ進む。
-
-### Phase 3
-
-- WKWebViewによる大学公式ログイン
-- 実通信を観察した上でWebClassセッション連携
-- 課題実施状況データの自動取得
-
-### Phase 4以降
-
-- 自動完了判定、差分同期、通知
-- MenuBarExtra、SMAppService、定期同期
-- 設定、初回セットアップ、エラー処理
-
-## セキュリティ境界
-
-- パスワードは収集・保存しない。
-- URLトークンやセッション値はログへ出さない。
-- MoodleカレンダーURLはKeychainにだけ保存する。
-- WebClass認証は公式ページをWKWebViewで開き、仕様確認後にセッション連携方法を決める。
-- 片方のConnector失敗で、もう片方の取得済みデータを削除しない。
+Moodleのログイン後の実データでの確認、WebClassの通信調査・実装を進める。その後、通知・MenuBarExtra・SMAppService・定期同期をネイティブアダプターから接続する。Version 1の受入条件は引き続き未完了。
 

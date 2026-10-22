@@ -4,6 +4,8 @@ import Foundation
 enum AppFailure: LocalizedError, Equatable, Sendable {
     case invalidURL, keychain, storage, invalidCalendar, unsupportedCalendar
     case network, authentication, server, tooLarge
+    case backend
+    case moodleLoginRequired
 
     var errorDescription: String? {
         switch self {
@@ -16,6 +18,8 @@ enum AppFailure: LocalizedError, Equatable, Sendable {
         case .authentication: "カレンダーURLが無効か、認証が必要です。MoodleでURLを再取得してください。"
         case .server: "Moodleから正常な応答を取得できませんでした。時間を置いて再試行してください。"
         case .tooLarge: "カレンダーデータが大きすぎるため取得を中止しました。"
+        case .backend: "TypeScriptバックエンドを実行できませんでした。Node.jsを確認し、./run.shで起動し直してください。"
+        case .moodleLoginRequired: "提出状況を取得するにはMoodleへのログインが必要です。設定からログインしてください。"
         }
     }
 

@@ -3,6 +3,7 @@ import SwiftUI
 struct HomeView: View {
     @ObservedObject var viewModel: HomeViewModel
     @State private var showingSettings = false
+    @State private var showingUnknown = false
     @Environment(\.scenePhase) private var scenePhase
     private let clock = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
 
@@ -18,7 +19,7 @@ struct HomeView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding()
                 }
-                if viewModel.sections.isEmpty {
+                if viewModel.sections.isEmpty && viewModel.unknownTasks.isEmpty {
                     emptyState
                 } else {
                     taskList
@@ -66,6 +67,22 @@ struct HomeView: View {
                         .foregroundStyle(section.bucket == .overdue ? Color.red : Color.primary)
                 }
             }
+            if !viewModel.unknownTasks.isEmpty {
+                Section {
+                    DisclosureGroup(isExpanded: $showingUnknown) {
+                        ForEach(viewModel.unknownTasks) { task in
+                            let bucket = DeadlineClassifier().bucket(for: task.deadline, relativeTo: .now)
+                            NavigationLink { TaskDetailView(task: task, bucket: bucket) } label: {
+                                TaskRowView(task: task, bucket: bucket)
+                            }
+                        }
+                    } label: {
+                        Label("確認できなかった課題 \(viewModel.unknownTasks.count)件", systemImage: "questionmark.circle")
+                    }
+                } header: {
+                    Text("未完了とは別に保存しています")
+                }
+            }
         }
         .listStyle(.inset)
     }
@@ -73,7 +90,7 @@ struct HomeView: View {
     private var syncSummary: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Label("要確認 \(viewModel.visibleTaskCount)件", systemImage: "checklist")
+                Label("未完了 \(viewModel.visibleTaskCount)件", systemImage: "checklist")
                     .font(.headline)
 
                 Spacer()
@@ -88,8 +105,16 @@ struct HomeView: View {
                 }
             }
             .font(.caption)
-            Text(viewModel.isDemo ? "サンプルデータを表示中" : "Moodle：提出状況未確認の予定を含みます。WebClass：未連携")
+            Text(viewModel.isDemo ? "サンプルデータを表示中" : "Moodle：完了を確認した課題は非表示です。WebClass：未連携")
                 .font(.caption).foregroundStyle(.secondary)
+            if !viewModel.isDemo && viewModel.isConfigured && !viewModel.hasMoodleSession {
+                Button("Moodleにログインして提出状況を確認") { showingSettings = true }
+                    .font(.callout)
+            }
+            if !viewModel.unknownTasks.isEmpty {
+                Text("提出状況を確認できていない課題が \(viewModel.unknownTasks.count)件あります。下の一覧から確認できます。")
+                    .font(.caption).foregroundStyle(.orange)
+            }
             if let message = viewModel.syncMessage {
                 Text(message).font(.caption).foregroundStyle(.secondary)
             }
@@ -102,7 +127,7 @@ struct HomeView: View {
             Image(systemName: viewModel.isConfigured ? "calendar" : "link.badge.plus")
                 .font(.system(size: 44))
                 .foregroundStyle(.blue)
-            Text(viewModel.isConfigured ? "表示する課題はありません" : "Moodleを連携しましょう")
+            Text(viewModel.isConfigured ? "未完了の課題はありません" : "Moodleを連携しましょう")
                 .font(.title3.weight(.semibold))
             Text(viewModel.isConfigured ? "同期すると、カレンダーの予定を締切順に表示します。" : "設定でカレンダーURLを登録すると、課題を取得できます。")
                 .foregroundStyle(.secondary)

@@ -6,8 +6,11 @@ import Foundation
 final class CoreDataTaskRepository: TaskRepository {
     private let context: NSManagedObjectContext
     private let coordinator: NSPersistentStoreCoordinator
+    private let backend: BackendClient
+    private var isMerging = false
 
-    init(storeURL: URL? = nil, inMemory: Bool = false) throws {
+    init(storeURL: URL? = nil, inMemory: Bool = false, backend: BackendClient = BackendClient()) throws {
+        self.backend = backend
         let model = NSManagedObjectModel()
         model.entities = [
             Self.entity("TaskRecord", attributes: [("key", .stringAttributeType), ("payload", .binaryDataAttributeType)]),
@@ -50,71 +53,34 @@ final class CoreDataTaskRepository: TaskRepository {
         } catch { throw AppFailure.storage }
     }
 
-    func merge(_ tasks: [RemoteTask], source: TaskSource, at date: Date) throws -> SyncSummary {
-        guard tasks.allSatisfy({ $0.source == source && !$0.externalID.isEmpty }),
-              Set(tasks.map(\.externalID)).count == tasks.count else { throw AppFailure.invalidCalendar }
+    func merge(_ tasks: [RemoteTask], source: TaskSource, at date: Date) async throws -> SyncSummary {
+        guard !isMerging else { throw AppFailure.storage }
+        isMerging = true
+        defer { isMerging = false }
+        // DBのJSON形式・場所は維持し、更新ルールだけをTypeScriptに委譲する。
+        let result = try await backend.merge(existing: fetchTasks(), tasks: tasks, source: source, at: date)
+        try Task.checkCancellation()
+        guard result.tasks.allSatisfy({ $0.source == source }),
+              Set(result.tasks.map(\.externalID)).count == result.tasks.count else { throw AppFailure.backend }
         do {
             let allRecords = try records("TaskRecord")
             var objects: [String: NSManagedObject] = [:]
-            var existing: [String: TaskItem] = [:]
             for object in allRecords {
                 let item = try decode(object)
-                if item.source == source {
-                    objects[item.externalID] = object
-                    existing[item.externalID] = item
-                }
+                if item.source == source { objects[item.externalID] = object }
             }
-
-            var summary = SyncSummary()
-            let incomingIDs = Set(tasks.map(\.externalID))
-            for remote in tasks {
-                var local: TaskItem
-                if let previous = existing[remote.externalID] {
-                    local = previous
-                    if previous.deadline != remote.deadline { summary.deadlineChanges += 1 }
-                    if previous.title != remote.title || previous.courseName != remote.courseName ||
-                        previous.detail != remote.detail || previous.deadline != remote.deadline ||
-                        previous.sourceURL != remote.sourceURL || previous.isRemovedFromSource ||
-                        remote.isCompleted.map({ $0 != (previous.status == .completed) }) == true {
-                        summary.updated += 1
-                    }
-                } else {
-                    local = TaskItem(externalID: remote.externalID, source: source,
-                                     courseName: remote.courseName, title: remote.title,
-                                     deadline: remote.deadline, firstDetectedAt: date, lastSyncedAt: date)
-                    summary.inserted += 1
-                }
-                local.courseName = remote.courseName
-                local.title = remote.title
-                local.detail = remote.detail
-                local.deadline = remote.deadline
-                local.sourceURL = remote.sourceURL
-                local.lastSyncedAt = date
-                local.isRemovedFromSource = false
-                if let completed = remote.isCompleted {
-                    local.completionIsKnown = true
-                    local.status = completed ? .completed : (remote.deadline < date ? .overdue : .active)
-                    local.completedAt = completed ? (local.completedAt ?? date) : nil
-                } else if local.status != .completed {
-                    local.status = remote.deadline < date ? .overdue : .active
-                }
-                let object = objects[remote.externalID] ?? NSEntityDescription.insertNewObject(
+            for item in result.tasks {
+                let object = objects[item.externalID] ?? NSEntityDescription.insertNewObject(
                     forEntityName: "TaskRecord", into: context)
-                object.setValue(source.rawValue + ":" + remote.externalID, forKey: "key")
-                object.setValue(try JSONEncoder().encode(local), forKey: "payload")
-            }
-            for (id, var item) in existing where !incomingIDs.contains(id) {
-                // フィードの期間外・削除・取消のいずれでも、完了や物理削除とはみなさない。
-                item.isRemovedFromSource = true
-                objects[id]?.setValue(try JSONEncoder().encode(item), forKey: "payload")
-                summary.missing += 1
+                object.setValue(source.rawValue + ":" + item.externalID, forKey: "key")
+                object.setValue(try JSONEncoder().encode(item), forKey: "payload")
             }
             let sync = try records("SourceSync").first { $0.value(forKey: "key") as? String == source.rawValue }
                 ?? NSEntityDescription.insertNewObject(forEntityName: "SourceSync", into: context)
             sync.setValue(source.rawValue, forKey: "key")
             sync.setValue(date, forKey: "date")
             try context.save()
-            return summary
+            return result.summary
         } catch {
             context.rollback()
             throw AppFailure.storage

@@ -5,7 +5,7 @@ struct WebClassConnector: TaskSourceConnector {
     let source: TaskSource = .webClass
 
     func fetchTasks() async throws -> [RemoteTask] {
-        throw ConnectorError.notConfigured(source: source)
+        try await BackendClient().fetchWebClass()
     }
 }
 

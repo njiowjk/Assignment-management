@@ -55,7 +55,8 @@ struct DeadlineClassifierTests {
             deadline: deadline,
             status: status,
             firstDetectedAt: deadline,
-            lastSyncedAt: deadline
+            lastSyncedAt: deadline,
+            completionIsKnown: true
         )
     }
 }

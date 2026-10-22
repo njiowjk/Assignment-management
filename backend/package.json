@@ -1,0 +1,23 @@
+{
+  "name": "assignment-management-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc --noEmit && node scripts/build.mjs",
+    "test": "npm run build && tsc && node --test .test-build/tests/*.test.js",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@js-temporal/polyfill": "0.5.1",
+    "cheerio": "1.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "esbuild": "0.25.12",
+    "typescript": "5.9.3"
+  }
+}

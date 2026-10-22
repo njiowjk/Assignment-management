@@ -9,6 +9,9 @@ final class HomeViewModel: ObservableObject {
     @Published private(set) var isSyncing = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var syncMessage: String?
+    @Published private(set) var unknownTasks: [TaskItem] = []
+    @Published private(set) var loginBaseURL: URL?
+    @Published private(set) var hasMoodleSession = false
 
     let isDemo: Bool
     let storageAvailable: Bool
@@ -32,7 +35,13 @@ final class HomeViewModel: ObservableObject {
         }
         reload()
         if !isDemo {
-            do { isConfigured = try credentials.calendarURL() != nil }
+            do {
+                if let url = try credentials.calendarURL() {
+                    isConfigured = true
+                    loginBaseURL = KeychainService.moodleRoot(for: url)
+                    hasMoodleSession = try credentials.moodleSession(for: url) != nil
+                }
+            }
             catch { errorMessage = AppFailure.message(for: error) }
         }
     }
@@ -44,7 +53,9 @@ final class HomeViewModel: ObservableObject {
     func reload() {
         guard let repository else { return }
         do {
-            sections = sectionBuilder.sections(from: try repository.fetchTasks(), now: .now)
+            let tasks = try repository.fetchTasks()
+            sections = sectionBuilder.sections(from: tasks, now: .now)
+            unknownTasks = tasks.filter { !$0.completionIsKnown && $0.status != .completed }.sorted { $0.deadline < $1.deadline }
             lastUpdatedAt = try repository.lastSyncedAt(for: .moodle)
         } catch { errorMessage = AppFailure.message(for: error) }
     }
@@ -53,6 +64,9 @@ final class HomeViewModel: ObservableObject {
         guard !isSyncing, !isDemo, storageAvailable else { return false }
         do {
             try credentials.saveCalendarURL(text)
+            let url = try KeychainService.validatedURL(text)
+            loginBaseURL = KeychainService.moodleRoot(for: url)
+            hasMoodleSession = try credentials.moodleSession(for: url) != nil
             isConfigured = true
             errorMessage = nil
             syncMessage = "カレンダーURLをKeychainに保存しました。"
@@ -63,6 +77,21 @@ final class HomeViewModel: ObservableObject {
         }
     }
 
+    func currentMoodleSession() -> MoodleSession? {
+        guard let url = try? credentials.calendarURL() else { return nil }
+        return try? credentials.moodleSession(for: url)
+    }
+
+    func connectMoodleSession(_ session: MoodleSession) async -> String? {
+        do {
+            guard let url = try credentials.calendarURL() else { throw AppFailure.invalidURL }
+            try credentials.saveMoodleSession(session, for: url)
+            hasMoodleSession = true
+            await syncMoodle()
+            return errorMessage
+        } catch { return AppFailure.message(for: error) }
+    }
+
     func syncMoodle() async {
         guard !isSyncing, !isDemo, let repository, isConfigured else { return }
         isSyncing = true
@@ -70,12 +99,14 @@ final class HomeViewModel: ObservableObject {
         syncMessage = nil
         defer { isSyncing = false }
         do {
-            let result = try await SyncService(repository: repository).sync(MoodleConnector(credentials: credentials))
+            let existing = try repository.fetchTasks()
+            let result = try await SyncService(repository: repository).sync(MoodleConnector(credentials: credentials, existing: existing))
             reload()
             syncMessage = "同期完了・新規 \(result.inserted)件／更新 \(result.updated)件／締切変更 \(result.deadlineChanges)件"
         } catch is CancellationError {
             // ウィンドウ終了などによるキャンセルは同期失敗として表示しない。
         } catch {
+            if error as? AppFailure == .moodleLoginRequired { hasMoodleSession = false }
             errorMessage = AppFailure.message(for: error)
         }
     }

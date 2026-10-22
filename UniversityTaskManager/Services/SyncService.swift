@@ -10,6 +10,6 @@ final class SyncService {
         let tasks = try await connector.fetchTasks()
         try Task.checkCancellation()
         // 取得・解析が全て成功した時だけ、対象Sourceのデータと同期時刻を同時保存する。
-        return try repository.merge(tasks, source: connector.source, at: .now)
+        return try await repository.merge(tasks, source: connector.source, at: .now)
     }
 }

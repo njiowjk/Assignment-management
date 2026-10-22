@@ -67,7 +67,7 @@ struct SampleTaskRepository: TaskRepository {
 
     func lastSyncedAt(for source: TaskSource) -> Date? { now }
 
-    func merge(_ tasks: [RemoteTask], source: TaskSource, at date: Date) throws -> SyncSummary {
+    func merge(_ tasks: [RemoteTask], source: TaskSource, at date: Date) async throws -> SyncSummary {
         throw AppFailure.storage
     }
 
@@ -91,7 +91,8 @@ struct SampleTaskRepository: TaskRepository {
             sourceURL: nil,
             firstDetectedAt: now,
             lastSyncedAt: now,
-            completedAt: status == .completed ? now : nil
+            completedAt: status == .completed ? now : nil,
+            completionIsKnown: true
         )
     }
 
