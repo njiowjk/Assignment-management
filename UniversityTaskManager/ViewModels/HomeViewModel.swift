@@ -21,6 +21,10 @@ final class HomeViewModel: ObservableObject {
     @Published private(set) var isLoadingCredentials: Bool
     @Published var showingSettings = false
     @Published var notificationTask: TaskItem?
+    @Published private(set) var deadlineFilter: TaskDeadlineFilter
+    @Published private(set) var totalIncompleteCount = 0
+    @Published private(set) var totalUnknownTaskCount = 0
+    @Published private(set) var hiddenTaskCount = 0
 
     let isDemo: Bool
     let storageAvailable: Bool
@@ -33,6 +37,9 @@ final class HomeViewModel: ObservableObject {
     private var cachedCredentials = CredentialSnapshot()
     private var serviceTask: Task<Void, Never>?
     private let schedulingDefaults: UserDefaults?
+    private static let deadlineFilterKey = "taskList.v1.deadlineFilter"
+    private let now: @MainActor () -> Date
+    private var cachedTasks: [TaskItem] = []
     private var notificationsStarted = false
     lazy var notifications = NotificationController(defaults: schedulingDefaults,
         center: isDemo || schedulingDefaults == nil ? DisabledTaskNotificationCenter() : MacTaskNotificationCenter(),
@@ -55,7 +62,8 @@ final class HomeViewModel: ObservableObject {
         credentials: any CalendarCredentialStore = KeychainService(),
         sectionBuilder: TaskSectionBuilder = TaskSectionBuilder(),
         connectorFactory: (@MainActor (TaskSource, [TaskItem]) -> any TaskSourceConnector)? = nil,
-        schedulingDefaults: UserDefaults? = .standard
+        schedulingDefaults: UserDefaults? = .standard,
+        now: @escaping @MainActor () -> Date = { .now }
     ) {
         self.repository = repository
         self.isDemo = isDemo
@@ -63,7 +71,10 @@ final class HomeViewModel: ObservableObject {
         self.credentials = credentials
         self.sectionBuilder = sectionBuilder
         self.connectorFactory = connectorFactory
-        self.schedulingDefaults = isDemo ? nil : schedulingDefaults
+        let preferences = isDemo ? nil : schedulingDefaults
+        self.schedulingDefaults = preferences
+        self.deadlineFilter = TaskDeadlineFilter(savedValue: preferences?.string(forKey: Self.deadlineFilterKey))
+        self.now = now
         self.isLoadingCredentials = !isDemo && repository != nil
         guard repository != nil else {
             errorMessage = AppFailure.storage.localizedDescription
@@ -134,6 +145,29 @@ final class HomeViewModel: ObservableObject {
         sections.reduce(0) { $0 + $1.tasks.count }
     }
 
+    var filterHint: String? {
+        guard hiddenTaskCount > 0 else { return nil }
+        return "\(deadlineFilter == .upcoming ? "期限切れ" : "期限内") \(hiddenTaskCount)件を非表示にしています。データは削除されません。"
+    }
+
+    func setDeadlineFilter(_ filter: TaskDeadlineFilter) {
+        guard filter != deadlineFilter else { return }
+        deadlineFilter = filter
+        schedulingDefaults?.set(filter.rawValue, forKey: Self.deadlineFilterKey)
+        // Filtering is instant and local: no repository writes, credential reads, or sync.
+        applyDeadlineFilter()
+    }
+
+    private func applyDeadlineFilter() {
+        let date = now()
+        totalIncompleteCount = cachedTasks.filter(\.isVisibleOnHome).count
+        let unknown = cachedTasks.filter { !$0.completionIsKnown && $0.status != .completed }
+        totalUnknownTaskCount = unknown.count
+        sections = sectionBuilder.sections(from: cachedTasks, now: date, filter: deadlineFilter)
+        unknownTasks = unknown.filter { deadlineFilter.includes(deadline: $0.deadline, now: date) }.sorted { $0.deadline < $1.deadline }
+        hiddenTaskCount = totalIncompleteCount + totalUnknownTaskCount - visibleTaskCount - unknownTasks.count
+    }
+
     var hasAnySource: Bool { isConfigured || isWebClassConfigured }
 
     func statusText(for source: TaskSource) -> String {
@@ -154,9 +188,8 @@ final class HomeViewModel: ObservableObject {
     func reload() {
         guard let repository else { return }
         do {
-            let tasks = try repository.fetchTasks()
-            sections = sectionBuilder.sections(from: tasks, now: .now)
-            unknownTasks = tasks.filter { !$0.completionIsKnown && $0.status != .completed }.sorted { $0.deadline < $1.deadline }
+            cachedTasks = try repository.fetchTasks()
+            applyDeadlineFilter()
             lastMoodleUpdatedAt = try repository.lastSyncedAt(for: .moodle)
             lastWebClassUpdatedAt = try repository.lastSyncedAt(for: .webClass)
             lastUpdatedAt = [lastMoodleUpdatedAt, lastWebClassUpdatedAt].compactMap { $0 }.max()

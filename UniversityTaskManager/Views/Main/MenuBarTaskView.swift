@@ -13,6 +13,10 @@ struct MenuBarTaskView: View {
                 Spacer()
                 if coordinator.isRunning { ProgressView().controlSize(.small) }
             }
+            Picker("締切の絞り込み", selection: Binding(get: { viewModel.deadlineFilter }, set: { viewModel.setDeadlineFilter($0) })) {
+                ForEach(TaskDeadlineFilter.allCases) { filter in Text(filter.title).tag(filter) }
+            }.labelsHidden().pickerStyle(.segmented)
+            if let hint = viewModel.filterHint { Text(hint).font(.caption).foregroundStyle(.secondary) }
             ForEach(viewModel.sections.prefix(3)) { section in
                 Text("\(section.bucket.rawValue)　\(section.tasks.count)件").font(.caption)
             }
@@ -29,7 +33,7 @@ struct MenuBarTaskView: View {
                             }.frame(maxWidth: .infinity, alignment: .leading)
                         }.buttonStyle(.plain)
                     }
-                    if viewModel.visibleTaskCount == 0 { Text("確認済みの未完了課題はありません").font(.callout) }
+                    if viewModel.visibleTaskCount == 0 { Text(viewModel.deadlineFilter.emptyTitle).font(.callout) }
                 }
             }.frame(maxHeight: 260)
             if !viewModel.unknownTasks.isEmpty {

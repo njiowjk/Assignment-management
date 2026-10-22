@@ -10,6 +10,8 @@ struct HomeView: View {
             VStack(spacing: 0) {
                 syncSummary
                 Divider()
+                deadlineFilterBar
+                Divider()
                 if let error = viewModel.errorMessage {
                     Label(error, systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.red)
@@ -92,11 +94,32 @@ struct HomeView: View {
         .listStyle(.inset)
     }
 
+    private var deadlineFilterBar: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                Label("表示", systemImage: "line.3.horizontal.decrease.circle")
+                Picker("締切の絞り込み", selection: Binding(get: { viewModel.deadlineFilter }, set: { viewModel.setDeadlineFilter($0) })) {
+                    ForEach(TaskDeadlineFilter.allCases) { filter in Text(filter.title).tag(filter) }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 320)
+                Spacer(minLength: 0)
+            }
+            if let hint = viewModel.filterHint { Text(hint).font(.caption).foregroundStyle(.secondary) }
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 10)
+    }
+
     private var syncSummary: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Label("未完了 \(viewModel.visibleTaskCount)件", systemImage: "checklist")
                     .font(.headline)
+                if viewModel.visibleTaskCount != viewModel.totalIncompleteCount {
+                    Text("全\(viewModel.totalIncompleteCount)件中").foregroundStyle(.secondary)
+                }
 
                 Spacer()
 
@@ -139,7 +162,13 @@ struct HomeView: View {
 
     private var emptyState: some View {
         VStack(spacing: 12) {
-          if viewModel.isLoadingCredentials {
+          if viewModel.hiddenTaskCount > 0 {
+            Image(systemName: "line.3.horizontal.decrease.circle").font(.system(size: 44)).foregroundStyle(.blue)
+            Text(viewModel.deadlineFilter.emptyTitle).font(.title3.weight(.semibold))
+            Text("表示条件に一致する課題がありません。非表示の課題は「すべて」で確認できます。")
+                .foregroundStyle(.secondary)
+            Button("すべて表示") { viewModel.setDeadlineFilter(.all) }.buttonStyle(.borderedProminent)
+          } else if viewModel.isLoadingCredentials {
             ProgressView()
             Text("保存済みのログイン情報を確認しています")
                 .font(.title3.weight(.semibold))

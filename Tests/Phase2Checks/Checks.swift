@@ -11,6 +11,7 @@ struct Phase2Checks {
     static func main() async throws {
         try credentialChecks()
         try classificationChecks()
+        try filteringChecks()
         try await bridgeChecks()
         try await persistenceChecks()
         try await webClassChecks()
@@ -23,6 +24,62 @@ struct Phase2Checks {
     static func check(_ value: Bool, _ label: String) throws {
         guard value else { throw CheckFailure(label: label) }
         count += 1
+    }
+
+    static func filteringChecks() throws {
+        try check(TaskDeadlineFilter(savedValue: nil) == .upcoming, "new installs hide overdue tasks by default")
+        try check(TaskDeadlineFilter(savedValue: "invalid") == .upcoming, "invalid saved filter safely defaults to upcoming")
+        for filter in TaskDeadlineFilter.allCases {
+            try check(TaskDeadlineFilter(savedValue: filter.rawValue) == filter, "saved filter roundtrips without accessing user preferences")
+        }
+        try check(TaskDeadlineFilter.upcoming.includes(deadline: now, now: now) &&
+                  !TaskDeadlineFilter.overdue.includes(deadline: now, now: now), "exact deadline belongs to upcoming until it passes")
+        try check(!TaskDeadlineFilter.upcoming.includes(deadline: now.addingTimeInterval(-0.001), now: now) &&
+                  TaskDeadlineFilter.overdue.includes(deadline: now.addingTimeInterval(-0.001), now: now), "deadline filter uses precise time, not day or stale status")
+        var clock = now
+        func item(_ id: String, source: TaskSource = .moodle, offset: TimeInterval, known: Bool = true,
+                  status: TaskStatus = .active) -> TaskItem {
+            TaskItem(externalID: id, source: source, courseName: "授業", title: id,
+                deadline: now.addingTimeInterval(offset), status: status, completionIsKnown: known)
+        }
+        let tasks = [item("old", offset: -60), item("future", source: .webClass, offset: 3600, status: .overdue),
+                     item("boundary", offset: 0), item("old-unknown", source: .webClass, offset: -90, known: false),
+                     item("future-unknown", offset: 1800, known: false), item("done", offset: 3600, status: .completed)]
+        let repository = FilteringRepository(tasks: tasks, date: now)
+        let probe = CredentialModeProbe()
+        let vm = HomeViewModel(repository: repository, credentials: CredentialModeStore(probe: probe),
+            schedulingDefaults: nil, now: { clock })
+        try check(vm.deadlineFilter == .upcoming && vm.visibleTaskCount == 2 && vm.totalIncompleteCount == 3,
+                  "home and shared menu model show upcoming count while retaining total incomplete count")
+        try check(vm.sections.flatMap(\.tasks).map(\.externalID) == ["boundary", "future"], "upcoming tasks keep deadline ordering across both LMS sources")
+        try check(vm.unknownTasks.map(\.externalID) == ["future-unknown"] && vm.totalUnknownTaskCount == 2,
+                  "unknown tasks stay separate and obey the same date filter")
+        try check(vm.hiddenTaskCount == 2 && vm.filterHint?.contains("期限切れ") == true, "hidden count includes overdue known and unknown tasks but not completed")
+        let fetches = repository.fetches
+        vm.setDeadlineFilter(.all)
+        try check(vm.visibleTaskCount == 3 && vm.unknownTasks.count == 2 && vm.hiddenTaskCount == 0 && vm.filterHint == nil,
+                  "all restores overdue tasks without restoring completed tasks")
+        vm.setDeadlineFilter(.overdue)
+        try check(vm.sections.flatMap(\.tasks).map(\.externalID) == ["old"] && vm.sections.allSatisfy { $0.bucket == .overdue },
+                  "overdue-only uses actual deadlines even when stored task status differs")
+        try check(vm.unknownTasks.map(\.externalID) == ["old-unknown"] && vm.hiddenTaskCount == 3 && vm.filterHint?.contains("期限内") == true,
+                  "overdue-only separates unknowns and describes the hidden upcoming tasks")
+        vm.setDeadlineFilter(.upcoming)
+        try check(repository.fetches == fetches && repository.merges == 0 && probe.interactiveReads == 0 && probe.quietReads == 0,
+                  "filter changes do not fetch/write storage, read Keychain, or trigger sync")
+        clock = now.addingTimeInterval(1)
+        vm.reload()
+        try check(vm.visibleTaskCount == 1 && vm.hiddenTaskCount == 3, "periodic presentation refresh moves newly overdue tasks out of upcoming")
+        clock = now.addingTimeInterval(-120)
+        vm.reload()
+        try check(vm.visibleTaskCount == 3 && vm.hiddenTaskCount == 0, "clock rollback recalculates display without modifying stored status")
+        try check(repository.tasks == tasks && repository.merges == 0 && vm.lastUpdatedAt == now,
+                  "all filter modes preserve exact task data and source sync timestamps")
+        vm.openNotificationTask(tasks[0].id)
+        try check(vm.notificationTask?.id == tasks[0].id, "notification details can still open tasks independently of the display filter")
+        let empty = HomeViewModel(repository: FilteringRepository(tasks: [], date: now), schedulingDefaults: nil, now: { now })
+        empty.setDeadlineFilter(.overdue)
+        try check(empty.visibleTaskCount == 0 && empty.hiddenTaskCount == 0, "empty repository stays empty in every filter mode")
     }
 
     static func notificationChecks() async throws {
@@ -227,7 +284,7 @@ struct Phase2Checks {
         let repository = try CoreDataTaskRepository(inMemory: true)
         _ = try await repository.merge([remote(completed: false)], source: .moodle, at: now)
         let credentials = StartupCredentials()
-        let vm = HomeViewModel(repository: repository, credentials: credentials, schedulingDefaults: nil)
+        let vm = HomeViewModel(repository: repository, credentials: credentials, schedulingDefaults: nil, now: { now })
         try check(credentials.readCount == 0, "constructing the app model never opens Keychain")
         try check(vm.visibleTaskCount == 1, "offline cache is visible before credential authentication")
         let first = Task { await vm.loadCredentials() }
@@ -246,7 +303,7 @@ struct Phase2Checks {
         await vm.loadCredentials()
         try check(credentials.readCount == 2, "reopening a window does not trigger startup Keychain reads again")
 
-        let denied = HomeViewModel(repository: repository, credentials: DeniedCredentials(), schedulingDefaults: nil)
+        let denied = HomeViewModel(repository: repository, credentials: DeniedCredentials(), schedulingDefaults: nil, now: { now })
         await denied.loadCredentials()
         try check(!denied.isLoadingCredentials && denied.errorMessage != nil, "denied Keychain access becomes a visible error, not a stuck launch")
         try check(denied.visibleTaskCount == 1, "denied authentication preserves visible offline cache")
@@ -451,6 +508,20 @@ struct Phase2Checks {
 }
 
 struct CheckFailure: Error { let label: String }
+
+@MainActor
+final class FilteringRepository: TaskRepository {
+    let tasks: [TaskItem]
+    let date: Date
+    private(set) var fetches = 0
+    private(set) var merges = 0
+    init(tasks: [TaskItem], date: Date) { self.tasks = tasks; self.date = date }
+    func fetchTasks() throws -> [TaskItem] { fetches += 1; return tasks }
+    func lastSyncedAt(for source: TaskSource) throws -> Date? { date }
+    func merge(_ tasks: [RemoteTask], source: TaskSource, at date: Date) async throws -> SyncSummary {
+        merges += 1; throw AppFailure.storage
+    }
+}
 
 @MainActor
 final class SyntheticNotificationCenter: TaskNotificationCenter {

@@ -54,7 +54,7 @@ struct UniversityTaskManagerApp: App {
             MenuBarTaskView(viewModel: viewModel, coordinator: viewModel.coordinator)
         } label: {
             Label("\(viewModel.visibleTaskCount)", systemImage: "books.vertical")
-                .accessibilityLabel("大学課題管理 未完了\(viewModel.visibleTaskCount)件")
+                .accessibilityLabel("大学課題管理 \(viewModel.deadlineFilter.title)の未完了\(viewModel.visibleTaskCount)件")
         }.menuBarExtraStyle(.window)
     }
 }
